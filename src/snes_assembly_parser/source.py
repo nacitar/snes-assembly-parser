@@ -582,5 +582,7 @@ class Source:
             self._assert_gap_declared(before_end, after_start, before, after)
         lines: list[Line] = []
         for entry in entries:
+            if lines:
+                lines.append(Line.from_line(""))
             lines.extend(self._entry_lines(entry, comments=comments))
         return self._segment(lines)
