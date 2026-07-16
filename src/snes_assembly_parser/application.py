@@ -29,7 +29,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     source = Source.from_path(
         Path.home() / "scm/personal/alttp-jpdasm/usdasm/bank_0E.asm"
     )
-    for line in source.block("OverworldOverlay_MiseryMire", comments=True):
-        print(line)  # str(line) reproduces the source exactly
+    segment = source.block("OverworldOverlay_MiseryMire", comments=True)
+    print(segment.render(segment.start_address or 0))
 
     return 0

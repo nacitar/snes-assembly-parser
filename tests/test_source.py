@@ -63,7 +63,7 @@ def test_pools_span_directive_to_directive(source: Source) -> None:
 def test_block_stops_at_pool_boundary_and_trims(source: Source) -> None:
     # Foo's next boundary is the pool at 12, and trailing blank/comment
     # lines (9, 10, 11) are trimmed away.
-    assert as_text(source.block("Foo", comments=False)) == [
+    assert as_text(source.block("Foo", comments=False).lines) == [
         "Foo:",
         "  LDA.w #$00",
         ".loop",
@@ -74,7 +74,7 @@ def test_block_stops_at_pool_boundary_and_trims(source: Source) -> None:
 
 
 def test_block_with_comments_prepends_header(source: Source) -> None:
-    got = as_text(source.block("Foo", comments=True))
+    got = as_text(source.block("Foo", comments=True).lines)
     assert got[:4] == [
         ";===============",
         "; header for Foo",
@@ -84,11 +84,14 @@ def test_block_with_comments_prepends_header(source: Source) -> None:
 
 
 def test_block_to_end_of_source(source: Source) -> None:
-    assert as_text(source.block("Bar", comments=False)) == ["Bar:", "  RTL"]
+    assert as_text(source.block("Bar", comments=False).lines) == [
+        "Bar:",
+        "  RTL",
+    ]
 
 
 def test_pool_body(source: Source) -> None:
-    assert as_text(source.pool("Bar", comments=False)) == [
+    assert as_text(source.pool("Bar", comments=False).lines) == [
         "pool Bar",
         ".data",
         "  dw $0000, $0001",
@@ -98,7 +101,7 @@ def test_pool_body(source: Source) -> None:
 
 def test_pool_with_comments_keeps_interior_blank(source: Source) -> None:
     # Leading blank (9) is dropped; the blank after the divider (11) is kept.
-    got = as_text(source.pool("Bar", comments=True))
+    got = as_text(source.pool("Bar", comments=True).lines)
     assert got[:3] == [";===============", "", "pool Bar"]
 
 

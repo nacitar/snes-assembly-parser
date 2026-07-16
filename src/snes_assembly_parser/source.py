@@ -7,6 +7,8 @@ labelled blocks (routines, tilemaps, data tables, ...) can be extracted by name.
 
 from __future__ import annotations
 
+import copy
+import itertools
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
@@ -14,6 +16,47 @@ from typing import TYPE_CHECKING, ClassVar
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
+
+    from .segment import Segment
+
+# An address anchor: ``#_`` then uppercase hex, then an optional lowercase APU
+# bank tag (o/u/c). Named ``#`` labels (``#Module...``) never match because
+# they lack the ``_``; ``NULL_``/``UNREACHABLE_`` never match (no ``#_``).
+_ADDRESS_RE = re.compile(r"#_(?P<hex>[0-9A-F]+)(?P<tag>[ouc]?)")
+_NULL_RE = re.compile(r"#?NULL_[0-9A-F]+")
+_UNREACHABLE_RE = re.compile(r"#?UNREACHABLE_[0-9A-F]+")
+
+# Data directives and the byte width of each operand.
+_DATA_WIDTHS = {"db": 1, "dw": 2, "dl": 3, "dd": 4}
+
+
+def data_size(line: Line) -> int:
+    """Bytes emitted by a ``db``/``dw``/``dl``/``dd`` line (operands x width).
+
+    Returns 0 for any other line. Used to size inserted data and to derive the
+    end address of a data region that runs to the end of the file (where there
+    is no following anchor to measure against).
+    """
+    if line.opcode is None:
+        return 0
+    width = _DATA_WIDTHS.get(line.opcode.lower())
+    if width is None:
+        return 0
+    return len(line.arguments) * width
+
+
+def _assert_no_org(lines: list[Line]) -> None:
+    """Raise if ``lines`` cross an ``org`` directive.
+
+    Byte sizes assume contiguous ROM, so a span that includes an ``org`` (which
+    relocates the program counter) would be mis-sized. Callers keep runs within
+    a single ``org`` section; this turns a violation into a loud failure rather
+    than silently wrong addresses.
+    """
+    for line in lines:
+        if line.opcode == "org":
+            msg = f"span crosses an org directive: {str(line)!r}"
+            raise ValueError(msg)
 
 
 def _split_arguments(text: str) -> tuple[list[str], list[str]]:
@@ -101,6 +144,10 @@ class Line:
     arg_seps: list[str] = field(default_factory=list)
     trail: str = ""
     comment: str | None = None
+    #: Bytes this line emits. Populated by :meth:`Source.reindex` from anchor
+    #: adjacency (0 until then); carried on copies so extracted lines stay
+    #: sized. Not part of equality -- it is derived context, not syntax.
+    size: int = field(default=0, compare=False)
 
     @classmethod
     def from_line(cls, line: str) -> Line:
@@ -159,6 +206,62 @@ class Line:
         """Whether the line is empty/whitespace-only (no content, no comment)."""
         return not self.has_content and self.comment is None
 
+    @property
+    def is_address_label(self) -> bool:
+        """Whether the label is an address anchor (``#_<hex>`` or ``#_<hex>o``).
+
+        Distinguishes address anchors from scope-neutral named ``#`` labels
+        such as ``#Module0E_02_RenderText``, which are not addresses.
+        """
+        return (
+            self.label is not None
+            and _ADDRESS_RE.fullmatch(self.label) is not None
+        )
+
+    @property
+    def address(self) -> int | None:
+        """The integer address of an anchor line, or ``None``.
+
+        The APU bank tag (``o``/``u``/``c``), if present, does not affect the
+        value.
+        """
+        if self.label is None:
+            return None
+        match = _ADDRESS_RE.fullmatch(self.label)
+        return int(match["hex"], 16) if match is not None else None
+
+    @property
+    def is_null_label(self) -> bool:
+        """Whether the label marks free ROM (``NULL_<hex>``)."""
+        return (
+            self.label is not None
+            and _NULL_RE.fullmatch(self.label) is not None
+        )
+
+    @property
+    def is_unreachable_label(self) -> bool:
+        """Whether the label marks dead code (``UNREACHABLE_<hex>``)."""
+        return (
+            self.label is not None
+            and _UNREACHABLE_RE.fullmatch(self.label) is not None
+        )
+
+    def set_address(self, value: int) -> None:
+        """Re-stamp an anchor line's address to ``value`` in place.
+
+        Preserves the original hex width, any APU tag, and the surrounding
+        formatting (``label_sep``, colon), so an unedited line still round
+        trips. Raises if the line is not an address anchor.
+        """
+        match = (
+            None if self.label is None else _ADDRESS_RE.fullmatch(self.label)
+        )
+        if match is None:
+            msg = f"line has no address label to set: {self.label!r}"
+            raise ValueError(msg)
+        width = len(match["hex"])
+        self.label = f"#_{value:0{width}X}{match['tag']}"
+
     def _render_arguments(self) -> str:
         if not self.arguments:
             return ""
@@ -214,6 +317,20 @@ def leading_comments(lines: list[Line], index: int) -> list[Line]:
     return header[first:]
 
 
+@dataclass(frozen=True)
+class Block:
+    """Declares a top-level labelled block to copy (via :meth:`Source.block`)."""
+
+    name: str
+
+
+@dataclass(frozen=True)
+class Pool:
+    """Declares an asar label pool to copy (via :meth:`Source.pool`)."""
+
+    name: str
+
+
 @dataclass
 class Source:
     """A parsed assembly source: a list of :class:`Line` plus label indexes.
@@ -246,13 +363,12 @@ class Source:
         return cls.from_content(path.read_text().splitlines())
 
     def reindex(self) -> None:
-        """Rebuild the label and pool indexes from ``lines``.
+        """Rebuild the label, pool, and per-line size indexes from ``lines``.
 
         Called automatically after the lines are set; call it again after
         mutating ``lines`` directly. Records top-level labels (name -> line
-        index) and asar label pools (``pool X`` ... ``pool off``, name ->
-        ``(start, end)`` span). Pool bodies are indexed separately because
-        their sublabels are scoped to a routine defined elsewhere.
+        index), asar label pools (``pool X`` ... ``pool off``, name ->
+        ``(start, end)`` span), and every line's byte :attr:`~Line.size`.
         """
         self.labels = {}
         self.pools = {}
@@ -272,6 +388,28 @@ class Source:
                 and line.label is not None
             ):
                 self.labels[line.label] = index
+        self._size_lines()
+
+    def _size_lines(self) -> None:
+        """Set every line's byte size from ROM-anchor adjacency.
+
+        An anchor's size is the gap to the next anchor in the *full* source, so
+        a block's final line is sized against the true following address even
+        when that anchor belongs to a block we do not extract. The last anchor
+        in the file has no successor and falls back to :func:`data_size`.
+        """
+        prev_index = -1
+        prev_address: int | None = None
+        for index, line in enumerate(self.lines):
+            line.size = 0
+            address = line.address
+            if address is None:
+                continue
+            if prev_index >= 0 and prev_address is not None:
+                self.lines[prev_index].size = address - prev_address
+            prev_index, prev_address = index, address
+        if prev_index >= 0:
+            self.lines[prev_index].size = data_size(self.lines[prev_index])
 
     def _boundaries(self) -> list[int]:
         """Sorted indices where a block ends: top-level labels and pools."""
@@ -279,17 +417,8 @@ class Source:
             {*self.labels.values(), *(s for s, _ in self.pools.values())}
         )
 
-    def block(self, label: str, *, comments: bool) -> list[Line]:
-        """Return the lines of the labelled block starting at ``label``.
-
-        Works for any top-level label (routine, tilemap, data table, ...).
-        Spans from the labelled line up to (but not including) the next
-        top-level label or label pool, or the end of the file if there is
-        none. Trailing blank and comment-only lines are trimmed.
-
-        If ``comments`` is true, the block's leading comment header (see
-        :func:`leading_comments`) is prepended.
-        """
+    def _block_span(self, label: str) -> tuple[int, int]:
+        """``(start, end)`` line indices of ``label``'s block (``end`` exclusive)."""
         if label not in self.labels:
             msg = f"no top-level label named {label!r}"
             raise KeyError(msg)
@@ -298,26 +427,160 @@ class Source:
             (index for index in self._boundaries() if index > start),
             len(self.lines),
         )
+        return start, end
+
+    def _block_lines(self, label: str, *, comments: bool) -> list[Line]:
+        """Source lines (not copies) for ``label``'s block."""
+        start, end = self._block_span(label)
         body = trim_trailing(self.lines[start:end])
         if comments:
             return leading_comments(self.lines, start) + body
         return body
 
-    def pool(self, name: str, *, comments: bool) -> list[Line]:
-        """Return the lines of the asar label pool declared ``pool name``.
+    def _segment(self, lines: list[Line]) -> Segment:
+        """Wrap owning copies of ``lines`` in a Segment, asserting contiguity."""
+        from .segment import Segment
 
-        Includes the ``pool name`` / ``pool off`` directives and everything
-        between them. These sublabels are scoped to a routine defined
-        elsewhere, so pools are fetched here rather than via :meth:`block`.
+        _assert_no_org(lines)
+        return Segment([copy.copy(line) for line in lines])
 
-        If ``comments`` is true, the pool's leading comment header (see
-        :func:`leading_comments`) is prepended.
+    def block(self, label: str, *, comments: bool) -> Segment:
+        """Extract the labelled block starting at ``label`` as a Segment.
+
+        Works for any top-level label (routine, tilemap, data table, ...).
+        Spans from the labelled line up to (but not including) the next
+        top-level label or label pool, or the end of the file. Trailing blank
+        and comment-only lines are trimmed. The returned lines are copies (with
+        sizes already populated), so the caller may relocate or edit them
+        without disturbing this Source. If ``comments`` is true, the block's
+        leading comment header is prepended.
         """
+        return self._segment(self._block_lines(label, comments=comments))
+
+    def _pool_lines(self, name: str, *, comments: bool) -> list[Line]:
+        """Source lines (not copies) for the pool declared ``pool name``."""
         if name not in self.pools:
             msg = f"no pool named {name!r}"
             raise KeyError(msg)
         start, end = self.pools[name]
         body = trim_trailing(self.lines[start:end])
-        if comments:
-            return leading_comments(self.lines, start) + body
-        return body
+        header = leading_comments(self.lines, start) if comments else []
+        return header + body
+
+    def pool(self, name: str, *, comments: bool) -> Segment:
+        """Extract the asar label pool declared ``pool name`` as a Segment.
+
+        Includes the ``pool name`` / ``pool off`` directives and everything
+        between them. These sublabels are scoped to a routine defined
+        elsewhere, so pools are fetched here rather than via :meth:`block`. If
+        ``comments`` is true, the pool's leading comment header is prepended.
+        """
+        return self._segment(self._pool_lines(name, comments=comments))
+
+    def _entry_span(self, entry: Block | Pool) -> tuple[int, int]:
+        """``(start, end)`` line indices for a declared block or pool."""
+        if isinstance(entry, Pool):
+            if entry.name not in self.pools:
+                msg = f"no pool named {entry.name!r}"
+                raise KeyError(msg)
+            return self.pools[entry.name]
+        return self._block_span(entry.name)
+
+    def _entry_lines(
+        self, entry: Block | Pool, *, comments: bool
+    ) -> list[Line]:
+        """Source lines (not copies) for a declared block or pool."""
+        if isinstance(entry, Pool):
+            return self._pool_lines(entry.name, comments=comments)
+        return self._block_lines(entry.name, comments=comments)
+
+    def blocks_until(self, start: str) -> Segment:
+        """Extract a run of blocks from ``start`` up to a stop marker.
+
+        Walks forward from ``start``'s label, spanning every intervening
+        top-level label, and stops *before* the first ``NULL_`` (free ROM) or
+        ``UNREACHABLE_`` (dead code) label, or the end of the file. This is the
+        tool for data runs too large to list block-by-block (e.g. the message
+        table, which ends at a ``NULL_`` pad or EOF).
+        """
+        if start not in self.labels:
+            msg = f"no top-level label named {start!r}"
+            raise KeyError(msg)
+        begin = self.labels[start]
+        end = len(self.lines)
+        for index in range(begin + 1, len(self.lines)):
+            line = self.lines[index]
+            if line.is_null_label or line.is_unreachable_label:
+                end = index
+                break
+        return self._segment(trim_trailing(self.lines[begin:end]))
+
+    def region(self, first: str, last: str) -> Segment:
+        """Extract everything from ``first`` through the end of ``last``'s block.
+
+        Convenience sugar over a contiguous span; prefer :meth:`concat` for an
+        explicit, drift-checked list of blocks.
+        """
+        start, _ = self._block_span(first)
+        _, end = self._block_span(last)
+        return self._segment(trim_trailing(self.lines[start:end]))
+
+    def _assert_gap_declared(
+        self, start: int, end: int, before: Block | Pool, after: Block | Pool
+    ) -> None:
+        """Require the gap ``[start, end)`` to hold only free/dead content.
+
+        Between two declared entries the source may contain blank/comment lines
+        and complete ``NULL_``/``UNREACHABLE_`` (free/dead) blocks. Anything
+        else -- a live label, a ``pool`` directive, a stray ``db``/opcode -- is
+        unnamed byte-emitting content that :meth:`concat` would silently drop,
+        so raise instead.
+        """
+        index = start
+        while index < end:
+            line = self.lines[index]
+            if line.is_null_label or line.is_unreachable_label:
+                # Skip the whole dead/free block to its next boundary. Those
+                # labels are top-level, hence in self.labels and _boundaries().
+                index = next(
+                    (b for b in self._boundaries() if b > index),
+                    len(self.lines),
+                )
+                continue
+            if line.has_content:  # live label, `pool` directive, or stray data
+                what = line.label or line.opcode
+                msg = (
+                    f"unnamed content {what!r} between {before.name!r} and "
+                    f"{after.name!r}; declare it as Block()/Pool() or it would "
+                    f"be silently dropped"
+                )
+                raise ValueError(msg)
+            index += 1
+
+    def concat(
+        self, items: list[Block | Pool | str], *, comments: bool = False
+    ) -> Segment:
+        """Copy the declared blocks/pools, in source order, as one Segment.
+
+        Each item is a :class:`Block` (name), a :class:`Pool` (name), or a bare
+        ``str`` (treated as ``Block``). The items must appear in source order
+        and leave no unnamed byte-emitting content between them -- only
+        ``NULL_``/``UNREACHABLE_`` (free/dead) blocks may be unnamed in a gap.
+        A forgotten routine or pool is a loud error, not a silently broken ROM.
+        """
+        entries: list[Block | Pool] = [
+            Block(item) if isinstance(item, str) else item for item in items
+        ]
+        spans = [self._entry_span(entry) for entry in entries]
+        for (before, (_bs, before_end)), (
+            after,
+            (after_start, _ae),
+        ) in itertools.pairwise(zip(entries, spans, strict=True)):
+            if after_start < before_end:
+                msg = f"{after.name!r} is not after {before.name!r} in source order"
+                raise ValueError(msg)
+            self._assert_gap_declared(before_end, after_start, before, after)
+        lines: list[Line] = []
+        for entry in entries:
+            lines.extend(self._entry_lines(entry, comments=comments))
+        return self._segment(lines)

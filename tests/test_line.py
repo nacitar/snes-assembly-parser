@@ -106,3 +106,55 @@ def test_content_and_blank_flags(
     line = Line.from_line(text)
     assert line.has_content is content
     assert line.is_blank is blank
+
+
+@pytest.mark.parametrize(
+    ("text", "is_address", "address"),
+    [
+        ("#_0EC440: LDA $00", True, 0x0EC440),
+        ("#_3C00: dw $1234", True, 0x3C00),
+        ("#_D000o: dw Song01", True, 0xD000),  # APU bank tag ignored
+        ("#Module0E_02_RenderText:", False, None),  # named #, not an address
+        ("RenderText:", False, None),
+        ("NULL_0BFE5E:", False, None),
+        ("  LDA $00", False, None),
+    ],
+)
+def test_address_label(
+    text: str, *, is_address: bool, address: int | None
+) -> None:
+    line = Line.from_line(text)
+    assert line.is_address_label is is_address
+    assert line.address == address
+
+
+def test_set_address_preserves_width_tag_and_round_trip() -> None:
+    line = Line.from_line("#_0EC440: LDA $00")
+    line.set_address(0x0EC446)
+    assert str(line) == "#_0EC446: LDA $00"  # 6-wide, formatting intact
+    apu = Line.from_line("#_3C00o: dw $1234")
+    apu.set_address(0x3C02)
+    assert str(apu) == "#_3C02o: dw $1234"  # 4-wide, tag kept
+
+
+def test_set_address_on_non_anchor_raises() -> None:
+    with pytest.raises(ValueError, match="no address label"):
+        Line.from_line("RenderText:").set_address(0x1234)
+
+
+@pytest.mark.parametrize(
+    ("text", "null", "unreachable"),
+    [
+        ("NULL_0BFE5E:", True, False),
+        ("UNREACHABLE_0ABAB6:", False, True),
+        ("#UNREACHABLE_0CFDF9:", False, True),  # may be #-prefixed
+        ("#_0EC440: LDA $00", False, False),
+        ("Foo:", False, False),
+    ],
+)
+def test_null_and_unreachable_labels(
+    text: str, *, null: bool, unreachable: bool
+) -> None:
+    line = Line.from_line(text)
+    assert line.is_null_label is null
+    assert line.is_unreachable_label is unreachable
