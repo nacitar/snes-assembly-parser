@@ -1,0 +1,107 @@
+name: Build Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-alpha.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-beta.[0-9]+'
+
+permissions:
+  contents: write
+
+jobs:
+  validate-tag:
+    name: Validate Release Tag
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate tag format
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+|-alpha\.[0-9]+|-beta\.[0-9]+)?$ ]]; then
+            echo "Unsupported release tag: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+
+  build-wheel:
+    name: Build Python Wheel
+    runs-on: ubuntu-latest
+    needs: validate-tag
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v8.2.0
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-dist
+          path: dist/
+
+  publish-pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    needs: build-wheel
+    permissions:
+      id-token: write
+    environment: pypi
+
+    steps:
+      - name: Download dist artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: python-dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - validate-tag
+      - build-wheel
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+
+    steps:
+      - name: Install release dependencies
+        run: sudo apt-get update && sudo apt-get install -y gh
+
+      - name: Download archives
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+
+      - name: Create or update release
+        run: |
+          mapfile -t assets < <(find release-assets -type f \( -name '*.whl' -o -name '*.tar.gz' \) | sort)
+          if [ ${#assets[@]} -eq 0 ]; then
+            echo "No release assets were downloaded." >&2
+            exit 1
+          fi
+
+          prerelease_flag=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            prerelease_flag+=(--prerelease)
+          fi
+
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes \
+              "${prerelease_flag[@]}"
+          fi

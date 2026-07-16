@@ -1,0 +1,10 @@
+__pycache__/
+.ipynb_checkpoints/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+build/
+dist/
+docs/_build/
+.claude/settings.local.json

@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+from subprocess import CalledProcessError, run
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Executes linters and tests.")
+    parser.add_argument(
+        "--junitxml",
+        help="Create junit-xml style test results report file at given path.",
+    )
+    args = parser.parse_args()
+    this_script = Path(__file__).resolve()
+    project_root_dir = this_script.parent
+    scripts = [this_script.name]
+    env = os.environ.copy()
+    env.pop("VIRTUAL_ENV", None)
+    env["PYTHONPATH"] = str(project_root_dir / "src") + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    commands = [
+        (
+            ["black", "--target-version", "py312", ".", *scripts],
+            "formatting code",
+        ),
+        (
+            ["ruff", "check", "--fix", "--select", "I", ".", *scripts],
+            "sorting imports",
+        ),
+        (["mypy", "--scripts-are-modules", *scripts], "typechecking scripts"),
+        (["mypy", "."], "typechecking package"),
+        (["ruff", "check", ".", *scripts], "linting"),
+        (["vulture", "src/", "tests/", *scripts], "finding dead code"),
+        (
+            ["pytest"]
+            + ([f"--junitxml={args.junitxml}"] if args.junitxml else []),
+            "executing tests",
+        ),
+    ]
+    for command, description in commands:
+        print(f"Running {command[0]}... ({description})")
+        try:
+            run(
+                ["uv", "run", *command],  # noqa: S607
+                check=True,
+                cwd=project_root_dir,
+                env=env,
+            )
+        except CalledProcessError as e:
+            return e.returncode
+        print()
+    print("All checks completed successfully!")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
