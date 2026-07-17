@@ -122,12 +122,32 @@ DEAD = [
 ]
 
 
-def test_concat_excludes_unnamed_dead_and_collapses() -> None:
-    segment = Source.from_content(DEAD).concat(["Alpha", "Beta"])
-    got = anchors(segment.render(0x018000))
-    assert "#_018003: NOP" not in got  # dead block never named
-    # Beta's RTL was 018005; the 2 skipped dead bytes collapse it to 018003.
-    assert got == ["#_018000: LDA #$00", "#_018002: RTS", "#_018003: RTL"]
+def test_concat_drops_dead_and_reserves_gap_with_org() -> None:
+    rendered = (
+        Source.from_content(DEAD).concat(["Alpha", "Beta"]).render(0x018000)
+    )
+    got = anchors(rendered)
+    assert "#_018003: NOP" not in rendered  # dead block's bytes/label dropped
+    # The 2 dead bytes are reserved by an org, so Beta keeps its own 018005
+    # (not collapsed to 018003).
+    assert "org $018005" in rendered
+    assert got == ["#_018000: LDA #$00", "#_018002: RTS", "#_018005: RTL"]
+
+
+def test_concat_adjacent_blocks_emit_no_org() -> None:
+    # Alpha ends at 018007 and Beta begins there -- byte-adjacent, so no gap and
+    # no org; the two blocks simply flow together.
+    rendered = (
+        Source.from_content(BASE).concat(["Alpha", "Beta"]).render(0x018000)
+    )
+    assert "org $" not in rendered
+    assert anchors(rendered) == [
+        "#_018000: LDA.w #$0000",
+        "#_018003: STA.w $2100",
+        "#_018006: RTS",
+        "#_018007: NOP",
+        "#_018008: RTL",
+    ]
 
 
 def test_concat_rejects_unexplained_live_label() -> None:
@@ -200,16 +220,16 @@ def test_bare_string_is_treated_as_block() -> None:
     ).render(0x018000)
 
 
-def test_concat_omitting_dead_shrinks_end_by_dead_size() -> None:
+def test_concat_reserving_dead_keeps_end_address() -> None:
     source = Source.from_content(DEAD)
     kept = source.concat([Block("Alpha"), Block("Beta")])
     region = source.region("Alpha", "Beta")
     dead = source.block("UNREACHABLE_018003", comments=False)
     dead_size = sum(line.size for line in dead.lines)
     assert dead_size == 2
-    region_end = region.end_address
-    assert region_end is not None
-    assert kept.end_address == region_end - dead_size
+    # The dropped dead block's space is reserved with an org, so the footprint
+    # equals the contiguous region -- the end is NOT shrunk by the dead size.
+    assert kept.end_address == region.end_address
 
 
 # --- blocks_until: data runs that stop at a marker --------------------------

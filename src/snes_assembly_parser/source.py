@@ -183,6 +183,11 @@ class Line:
     #: adjacency (0 until then); carried on copies so extracted lines stay
     #: sized. Not part of equality -- it is derived context, not syntax.
     size: int = field(default=0, compare=False)
+    #: When true this is a synthetic gap marker (see :meth:`Source.concat`):
+    #: :meth:`Segment.render` skips ``size`` bytes and emits an ``org`` to the new
+    #: PC instead of this line's own text -- reserving space a dropped block held
+    #: so following blocks keep their address. Not part of equality/round-trip.
+    org_gap: bool = field(default=False, compare=False)
 
     @classmethod
     def from_line(cls, line: str) -> Line:
@@ -615,8 +620,41 @@ class Source:
                 raise ValueError(msg)
             index += 1
 
+    @staticmethod
+    def _gap_marker(
+        gap_bytes: int, dead: list[str], gap_notes: dict[str, str]
+    ) -> list[Line]:
+        """Comment + synthetic ``org`` reserving a ``gap_bytes`` dropped gap.
+
+        The comment states the byte count and which dead/free block(s) were
+        dropped; any ``gap_notes[name]`` adds why that space is load-bearing
+        (e.g. an over-indexed read reaches into the block below).
+        """
+        names = ", ".join(dead) if dead else "dead/free data"
+        marker = [
+            Line.from_line(
+                f"; +{gap_bytes} byte gap: dropped {names}; the org below reserves"
+                " that space so the"
+            ),
+            Line.from_line(
+                "; following blocks keep their original offset (dropping it bare"
+                " would shift them)."
+            ),
+        ]
+        marker += [
+            Line.from_line(f"; {name}: {gap_notes[name]}")
+            for name in dead
+            if name in gap_notes
+        ]
+        marker.append(Line(size=gap_bytes, org_gap=True))
+        return marker
+
     def concat(
-        self, items: list[Block | Pool | str], *, comments: bool = False
+        self,
+        items: list[Block | Pool | str],
+        *,
+        comments: bool = False,
+        gap_notes: dict[str, str] | None = None,
     ) -> Segment:
         """Copy the declared blocks/pools, in source order, as one Segment.
 
@@ -625,7 +663,19 @@ class Source:
         and leave no unnamed byte-emitting content between them -- only
         ``NULL_``/``UNREACHABLE_`` (free/dead) blocks may be unnamed in a gap.
         A forgotten routine or pool is a loud error, not a silently broken ROM.
+
+        Placement is driven by each entry's own address: when an entry declares
+        an address that is *not* adjacent to where the previous entry ended, a
+        synthetic ``org`` is emitted to reserve exactly the intervening bytes, so
+        every entry keeps its declared offset even after the blocks between them
+        were dropped -- essential when code reaches across blocks (an over-indexed
+        table read) and safe if the list later names individual functions rather
+        than whole regions. Entries that are byte-adjacent get no ``org``, and an
+        entry with *no* address simply flows on (auto-numbered) from the previous
+        one. ``gap_notes`` maps a dropped block's label to an explanation appended
+        to its gap comment.
         """
+        gap_notes = gap_notes or {}
         entries: list[Block | Pool] = [
             Block(item) if isinstance(item, str) else item for item in items
         ]
@@ -639,8 +689,35 @@ class Source:
                 raise ValueError(msg)
             self._assert_gap_declared(before_end, after_start, before, after)
         lines: list[Line] = []
-        for entry in entries:
+        prev_end_addr: int | None = None
+        prev_src_end: int | None = None
+        for entry, (start, end) in zip(entries, spans, strict=True):
+            span = self.lines[start:end]
+            entry_addr = next(
+                (line.address for line in span if line.address is not None),
+                None,
+            )
+            entry_size = sum(line.size for line in span)
+            if (
+                prev_end_addr is not None
+                and entry_addr is not None
+                and entry_addr > prev_end_addr
+            ):
+                gap_bytes = entry_addr - prev_end_addr
+                dead = [
+                    line.label
+                    for line in self.lines[(prev_src_end or start) : start]
+                    if line.label is not None
+                    and (line.is_null_label or line.is_unreachable_label)
+                ]
+                lines.append(Line.from_line(""))
+                lines.extend(self._gap_marker(gap_bytes, dead, gap_notes))
             if lines:
                 lines.append(Line.from_line(""))
             lines.extend(self._entry_lines(entry, comments=comments))
+            if entry_addr is not None:
+                prev_end_addr = entry_addr + entry_size
+            elif prev_end_addr is not None:
+                prev_end_addr += entry_size
+            prev_src_end = end
         return self._segment(lines)

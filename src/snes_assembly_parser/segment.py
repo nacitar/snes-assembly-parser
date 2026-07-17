@@ -188,10 +188,19 @@ class Segment:
         unedited segment at its original origin reproduces the source exactly;
         rendering elsewhere relocates every anchor, and inserts/deletes shift
         all downstream anchors by the net size change.
+
+        A gap marker (``Line.org_gap``, from :meth:`Source.concat`) advances the
+        PC by its ``size`` and emits an ``org`` to the new PC instead of its own
+        text -- reserving the space a dropped block held so the blocks after it
+        keep their address.
         """
         pc = org
         out: list[str] = []
         for line in self.lines:
+            if line.org_gap:
+                pc += line.size
+                out.append(f"org ${pc:06X}")
+                continue
             if line.is_address_label:
                 line.set_address(pc)
             out.append(str(line))

@@ -54,7 +54,7 @@ def test_forgotten_pool_errors(bank_0e: Source) -> None:
         )
 
 
-def test_dead_block_allowed_and_shrinks_end(bank_0e: Source) -> None:
+def test_dead_block_allowed_and_reserved_keeps_end(bank_0e: Source) -> None:
     kept = bank_0e.concat(
         [
             Block("RenderText_PerformVWFing"),
@@ -67,6 +67,9 @@ def test_dead_block_allowed_and_shrinks_end(bank_0e: Source) -> None:
     dead = bank_0e.block("UNREACHABLE_0ECCF8", comments=False)
     dead_size = sum(line.size for line in dead.lines)
     assert dead_size > 0
-    region_end = region.end_address
-    assert region_end is not None
-    assert kept.end_address == region_end - dead_size
+    # The dropped dead block's space is reserved with an org, so the footprint
+    # matches the contiguous region (the end is NOT shrunk by the dead size).
+    assert kept.end_address == region.end_address
+    start = kept.start_address
+    assert start is not None
+    assert "org $" in kept.render(start)  # the reserved-gap org
