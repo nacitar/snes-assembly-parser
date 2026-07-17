@@ -1,10 +1,10 @@
 """Relocatable, editable runs of assembly with per-line byte sizes.
 
 A :class:`Segment` owns an ordered list of :class:`~.source.Line`, each already
-carrying its byte :attr:`~.source.Line.size`. Because every line knows its size,
-:meth:`Segment.render` can walk a program counter from any origin and re-stamp
-each address anchor -- so a segment can be relocated or edited (insert / delete /
-replace) and still emit correct, contiguous addresses.
+carrying its byte :attr:`~.source.Line.size`. Because every line knows its
+size, :meth:`Segment.render` can walk a program counter from any origin and
+re-stamp each address anchor -- so a segment can be relocated or edited (insert
+/ delete / replace) and still emit correct, contiguous addresses.
 
 Use :func:`code`, :func:`data`, and :func:`note` to build lines for insertion.
 """
@@ -65,10 +65,10 @@ def datas(texts: Iterable[str]) -> list[Line]:
 def code_lines(texts: Iterable[str], sizes: dict[str, int]) -> list[Line]:
     """Instruction lines sized from a :meth:`Source.instruction_sizes` map.
 
-    No hand-written size is needed: each line's :func:`~.source.instruction_shape`
-    is looked up in ``sizes`` (raising if absent), and an address anchor is added
-    if omitted. ``sizes`` typically comes from the same source the surrounding
-    code was pulled from.
+    No hand-written size is needed: each line's
+    :func:`~.source.instruction_shape` is looked up in ``sizes`` (raising if
+    absent), and an address anchor is added if omitted. ``sizes`` typically
+    comes from the same source the surrounding code was pulled from.
     """
     result: list[Line] = []
     for text in texts:
@@ -102,10 +102,10 @@ class Segment:
 
     @property
     def end_address(self) -> int | None:
-        """Address just past the segment's footprint (``start`` plus total size).
+        """Address just past the segment's footprint (``start`` + total size).
 
-        This is where :meth:`render` leaves the PC, so it reflects the bytes the
-        segment actually emits -- for a contiguous run it equals the last
+        This is where :meth:`render` leaves the PC, so it reflects the bytes
+        the segment actually emits -- for a contiguous run it equals the last
         anchor's end, but when dead blocks are omitted (see
         :meth:`Source.concat`) it correctly shrinks by the omitted size.
         """
@@ -115,7 +115,8 @@ class Segment:
         return start + sum(line.size for line in self.lines)
 
     def _find(self, needle: str, start: int = 0) -> int:
-        """Index of the first line at/after ``start`` whose text contains ``needle``."""
+        """Index of the first line at/after ``start`` whose text contains
+        ``needle``."""
         for index in range(start, len(self.lines)):
             if needle in str(self.lines[index]):
                 return index
@@ -127,8 +128,8 @@ class Segment:
 
         Raises if the segment does not contain exactly ``count`` occurrences --
         that loud failure is how upstream drift (e.g. an operand that changed)
-        is caught. Byte-neutral: each line keeps its recorded size, so this does
-        not self-correct if ``new`` emits a different number of bytes.
+        is caught. Byte-neutral: each line keeps its recorded size, so this
+        does not self-correct if ``new`` emits a different number of bytes.
         """
         found = sum(str(line).count(old) for line in self.lines)
         if found != count:
@@ -141,7 +142,8 @@ class Segment:
                 self.lines[index] = replaced
 
     def annotate(self, needle: str, comment: str) -> None:
-        """Append ``comment`` to the first line containing ``needle`` (byte-neutral)."""
+        """Append ``comment`` to the first line containing ``needle``
+        (byte-neutral)."""
         line = self.lines[self._find(needle)]
         if line.comment is None:
             if line.has_content and not line.trail:
@@ -151,7 +153,8 @@ class Segment:
             line.comment = f"{line.comment} {comment}"
 
     def insert_after(self, needle: str, lines: list[Line]) -> None:
-        """Insert ``lines`` right after the first line containing ``needle``."""
+        """Insert ``lines`` right after the first line containing
+        ``needle``."""
         index = self._find(needle) + 1
         self.lines[index:index] = lines
 
@@ -160,7 +163,8 @@ class Segment:
         self.lines.extend(lines)
 
     def delete(self, first: str, stop: str) -> None:
-        """Delete lines from ``first`` up to (excluding) ``stop``, by substring."""
+        """Delete lines from ``first`` up to (excluding) ``stop``, by
+        substring."""
         begin = self._find(first)
         end = self._find(stop, begin)
         del self.lines[begin:end]
@@ -169,9 +173,9 @@ class Segment:
         """Delete the whole block that top-level ``label`` begins.
 
         Spans from the label's line to the next block boundary (via
-        :func:`~.source.block_end`), the same rule :class:`~.source.Source` uses to
-        carve blocks -- so a routine/data table can be removed by name without
-        naming the block that follows it.
+        :func:`~.source.block_end`), the same rule :class:`~.source.Source`
+        uses to carve blocks -- so a routine/data table can be removed by name
+        without naming the block that follows it.
         """
         for index, line in enumerate(self.lines):
             if line.is_top_level_label and line.label == label:
@@ -189,10 +193,10 @@ class Segment:
         rendering elsewhere relocates every anchor, and inserts/deletes shift
         all downstream anchors by the net size change.
 
-        A gap marker (``Line.org_gap``, from :meth:`Source.concat`) advances the
-        PC by its ``size`` and emits an ``org`` to the new PC instead of its own
-        text -- reserving the space a dropped block held so the blocks after it
-        keep their address.
+        A gap marker (``Line.org_gap``, from :meth:`Source.concat`) advances
+        the PC by its ``size`` and emits an ``org`` to the new PC instead of
+        its own text -- reserving the space a dropped block held so the blocks
+        after it keep their address.
         """
         pc = org
         out: list[str] = []

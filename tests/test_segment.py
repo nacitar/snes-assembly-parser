@@ -135,8 +135,8 @@ def test_concat_drops_dead_and_reserves_gap_with_org() -> None:
 
 
 def test_concat_adjacent_blocks_emit_no_org() -> None:
-    # Alpha ends at 018007 and Beta begins there -- byte-adjacent, so no gap and
-    # no org; the two blocks simply flow together.
+    # Alpha ends at 018007 and Beta begins there -- byte-adjacent, so no gap
+    # and no org; the two blocks simply flow together.
     rendered = (
         Source.from_content(BASE).concat(["Alpha", "Beta"]).render(0x018000)
     )

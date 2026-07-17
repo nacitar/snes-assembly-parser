@@ -80,7 +80,7 @@ testpaths = ["tests"]
 line-length = 79
 
 [tool.ruff.lint]
-extend-ignore = ["COM812", "COM819", "E203", "E501", "TD003"]
+extend-ignore = ["COM812", "COM819", "E203", "TD003"]
 select = [
     "A", "ANN", "ARG", "ASYNC", "B", "BLE", "C4", "C90", "COM",
     "DTZ", "E", "EM", "ERA", "F", "FA", "FLY", "FURB", "I",

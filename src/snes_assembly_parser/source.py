@@ -2,7 +2,8 @@
 
 :class:`Line` decomposes a single source line losslessly, and :class:`Source`
 holds a list of them, indexing top-level labels and asar label pools so that
-labelled blocks (routines, tilemaps, data tables, ...) can be extracted by name.
+labelled blocks (routines, tilemaps, data tables, ...) can be extracted by
+name.
 """
 
 from __future__ import annotations
@@ -50,16 +51,17 @@ def instruction_shape(line: Line) -> str:
     """A size-determining signature: opcode plus operand punctuation.
 
     Hex runs (operand *values*) are blanked, so ``LDA.w #$5959`` and
-    ``LDA.w #$0004`` share a shape; the explicit ``.b``/``.w``/``.l`` width in the
-    opcode is what fixes the size, so a shape maps to exactly one byte size (see
-    :meth:`Source.instruction_sizes`).
+    ``LDA.w #$0004`` share a shape; the explicit ``.b``/``.w``/``.l`` width in
+    the opcode is what fixes the size, so a shape maps to exactly one byte size
+    (see :meth:`Source.instruction_sizes`).
     """
     operands = _HEX_RUN.sub("H", " ".join(line.arguments))
     return f"{line.opcode} {operands}".rstrip()
 
 
 def _is_block_boundary(line: Line) -> bool:
-    """Whether ``line`` begins a new block: a top-level label or a ``pool`` open."""
+    """Whether ``line`` begins a new block: a top-level label or a ``pool``
+    open."""
     return line.is_top_level_label or (
         line.opcode == "pool"
         and bool(line.arguments)
@@ -70,9 +72,10 @@ def _is_block_boundary(line: Line) -> bool:
 def block_end(lines: list[Line], start: int) -> int:
     """Index one past the block beginning at ``start``.
 
-    Scans forward to the next block boundary (top-level label or ``pool`` open),
-    or the end of ``lines``. Shared by :meth:`Source._block_span` and
-    :meth:`~.segment.Segment.delete_block` so "where a block ends" is defined once.
+    Scans forward to the next block boundary (top-level label or ``pool``
+    open), or the end of ``lines``. Shared by :meth:`Source._block_span` and
+    :meth:`~.segment.Segment.delete_block` so "where a block ends" is defined
+    once.
     """
     for index in range(start + 1, len(lines)):
         if _is_block_boundary(lines[index]):
@@ -162,7 +165,8 @@ class Line:
         # colon-less sublabel (this codebase writes those as ``.foo``).
         r"(?:(?P<label>[^\s;]+):(?P<label_sep>[ \t]*)"
         r"|(?P<sublabel>\.[^\s;]+)(?P<sublabel_sep>[ \t]*))?"
-        r"(?:(?P<opcode>[^\s;]+)(?:(?P<opcode_sep>[ \t]+)(?P<arguments>[^;]*?))?)?"
+        r"(?:(?P<opcode>[^\s;]+)(?:(?P<opcode_sep>[ \t]+)"
+        r"(?P<arguments>[^;]*?))?)?"
         r"(?P<trail>[ \t]*)"
         r"(?:;(?P<comment>.*))?"
     )
@@ -184,9 +188,10 @@ class Line:
     #: sized. Not part of equality -- it is derived context, not syntax.
     size: int = field(default=0, compare=False)
     #: When true this is a synthetic gap marker (see :meth:`Source.concat`):
-    #: :meth:`Segment.render` skips ``size`` bytes and emits an ``org`` to the new
-    #: PC instead of this line's own text -- reserving space a dropped block held
-    #: so following blocks keep their address. Not part of equality/round-trip.
+    #: :meth:`Segment.render` skips ``size`` bytes and emits an ``org`` to the
+    #: new PC instead of this line's own text -- reserving space a dropped
+    #: block held so following blocks keep their address. Not part of
+    #: equality/round-trip.
     org_gap: bool = field(default=False, compare=False)
 
     @classmethod
@@ -243,12 +248,14 @@ class Line:
 
     @property
     def is_blank(self) -> bool:
-        """Whether the line is empty/whitespace-only (no content, no comment)."""
+        """Whether the line is empty/whitespace-only (no content, no
+        comment)."""
         return not self.has_content and self.comment is None
 
     @property
     def is_address_label(self) -> bool:
-        """Whether the label is an address anchor (``#_<hex>`` or ``#_<hex>o``).
+        """Whether the label is an address anchor (``#_<hex>`` or
+        ``#_<hex>o``).
 
         Distinguishes address anchors from scope-neutral named ``#`` labels
         such as ``#Module0E_02_RenderText``, which are not addresses.
@@ -359,7 +366,8 @@ def leading_comments(lines: list[Line], index: int) -> list[Line]:
 
 @dataclass(frozen=True)
 class Block:
-    """Declares a top-level labelled block to copy (via :meth:`Source.block`)."""
+    """Declares a top-level labelled block to copy
+    (via :meth:`Source.block`)."""
 
     name: str
 
@@ -452,13 +460,14 @@ class Source:
             self.lines[prev_index].size = data_size(self.lines[prev_index])
 
     def instruction_sizes(self) -> dict[str, int]:
-        """Map each instruction shape to its byte size, learned from this source.
+        """Map each instruction shape to its byte size, learned from this
+        source.
 
         Keyed by :func:`instruction_shape` (opcode + blanked operands). Because
         the disassembly writes explicit ``.b``/``.w``/``.l`` widths, each shape
         has exactly one size (processor M/X mode never changes it); a conflict
-        raises. Pass the result to :func:`~.segment.code_lines` to size inserted
-        instructions without hand-writing an opcode table.
+        raises. Pass the result to :func:`~.segment.code_lines` to size
+        inserted instructions without hand-writing an opcode table.
         """
         sizes: dict[str, int] = {}
         for line in self.lines:
@@ -485,7 +494,8 @@ class Source:
         )
 
     def _block_span(self, label: str) -> tuple[int, int]:
-        """``(start, end)`` line indices of ``label``'s block (``end`` exclusive)."""
+        """``(start, end)`` line indices of ``label``'s block (``end``
+        exclusive)."""
         if label not in self.labels:
             msg = f"no top-level label named {label!r}"
             raise KeyError(msg)
@@ -501,7 +511,8 @@ class Source:
         return body
 
     def _segment(self, lines: list[Line]) -> Segment:
-        """Wrap owning copies of ``lines`` in a Segment, asserting contiguity."""
+        """Wrap owning copies of ``lines`` in a Segment, asserting
+        contiguity."""
         from .segment import Segment
 
         _assert_no_org(lines)
@@ -579,7 +590,8 @@ class Source:
         return self._segment(trim_trailing(self.lines[begin:end]))
 
     def region(self, first: str, last: str) -> Segment:
-        """Extract everything from ``first`` through the end of ``last``'s block.
+        """Extract everything from ``first`` through the end of ``last``'s
+        block.
 
         Convenience sugar over a contiguous span; prefer :meth:`concat` for an
         explicit, drift-checked list of blocks.
@@ -614,8 +626,8 @@ class Source:
                 what = line.label or line.opcode
                 msg = (
                     f"unnamed content {what!r} between {before.name!r} and "
-                    f"{after.name!r}; declare it as Block()/Pool() or it would "
-                    f"be silently dropped"
+                    f"{after.name!r}; declare it as Block()/Pool() or it "
+                    f"would be silently dropped"
                 )
                 raise ValueError(msg)
             index += 1
@@ -633,12 +645,12 @@ class Source:
         names = ", ".join(dead) if dead else "dead/free data"
         marker = [
             Line.from_line(
-                f"; +{gap_bytes} byte gap: dropped {names}; the org below reserves"
-                " that space so the"
+                f"; +{gap_bytes} byte gap: dropped {names}; the org below "
+                "reserves that space so the"
             ),
             Line.from_line(
-                "; following blocks keep their original offset (dropping it bare"
-                " would shift them)."
+                "; following blocks keep their original offset (dropping "
+                "it bare would shift them)."
             ),
         ]
         marker += [
@@ -664,16 +676,16 @@ class Source:
         ``NULL_``/``UNREACHABLE_`` (free/dead) blocks may be unnamed in a gap.
         A forgotten routine or pool is a loud error, not a silently broken ROM.
 
-        Placement is driven by each entry's own address: when an entry declares
-        an address that is *not* adjacent to where the previous entry ended, a
-        synthetic ``org`` is emitted to reserve exactly the intervening bytes, so
-        every entry keeps its declared offset even after the blocks between them
-        were dropped -- essential when code reaches across blocks (an over-indexed
-        table read) and safe if the list later names individual functions rather
-        than whole regions. Entries that are byte-adjacent get no ``org``, and an
-        entry with *no* address simply flows on (auto-numbered) from the previous
-        one. ``gap_notes`` maps a dropped block's label to an explanation appended
-        to its gap comment.
+        Placement is driven by each entry's own address: when an entry
+        declares an address that is *not* adjacent to where the previous entry
+        ended, a synthetic ``org`` is emitted to reserve exactly the
+        intervening bytes, so every entry keeps its declared offset even after
+        the blocks between them were dropped -- essential when code reaches
+        across blocks (an over-indexed table read) and safe if the list later
+        names individual functions rather than whole regions. Entries that are
+        byte-adjacent get no ``org``, and an entry with *no* address simply
+        flows on (auto-numbered) from the previous one. ``gap_notes`` maps a
+        dropped block's label to an explanation appended to its gap comment.
         """
         gap_notes = gap_notes or {}
         entries: list[Block | Pool] = [
@@ -685,7 +697,10 @@ class Source:
             (after_start, _ae),
         ) in itertools.pairwise(zip(entries, spans, strict=True)):
             if after_start < before_end:
-                msg = f"{after.name!r} is not after {before.name!r} in source order"
+                msg = (
+                    f"{after.name!r} is not after "
+                    f"{before.name!r} in source order"
+                )
                 raise ValueError(msg)
             self._assert_gap_declared(before_end, after_start, before, after)
         lines: list[Line] = []
