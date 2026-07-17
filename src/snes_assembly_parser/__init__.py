@@ -6,8 +6,8 @@ Attributes:
 
 import importlib.metadata
 
-from .segment import Segment, code, data, note
-from .source import Block, Line, Pool, Source, data_size
+from .segment import Segment, code, code_lines, data, datas, note, notes
+from .source import Block, Line, Pool, Source, data_size, instruction_shape
 
 try:
     __version__ = importlib.metadata.version(__package__)
@@ -24,7 +24,11 @@ __all__ = [
     "Source",
     "__version__",
     "code",
+    "code_lines",
     "data",
     "data_size",
+    "datas",
+    "instruction_shape",
     "note",
+    "notes",
 ]

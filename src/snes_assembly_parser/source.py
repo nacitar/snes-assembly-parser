@@ -28,6 +28,7 @@ _UNREACHABLE_RE = re.compile(r"#?UNREACHABLE_[0-9A-F]+")
 
 # Data directives and the byte width of each operand.
 _DATA_WIDTHS = {"db": 1, "dw": 2, "dl": 3, "dd": 4}
+_HEX_RUN = re.compile(r"[0-9A-Fa-f]+")
 
 
 def data_size(line: Line) -> int:
@@ -43,6 +44,40 @@ def data_size(line: Line) -> int:
     if width is None:
         return 0
     return len(line.arguments) * width
+
+
+def instruction_shape(line: Line) -> str:
+    """A size-determining signature: opcode plus operand punctuation.
+
+    Hex runs (operand *values*) are blanked, so ``LDA.w #$5959`` and
+    ``LDA.w #$0004`` share a shape; the explicit ``.b``/``.w``/``.l`` width in the
+    opcode is what fixes the size, so a shape maps to exactly one byte size (see
+    :meth:`Source.instruction_sizes`).
+    """
+    operands = _HEX_RUN.sub("H", " ".join(line.arguments))
+    return f"{line.opcode} {operands}".rstrip()
+
+
+def _is_block_boundary(line: Line) -> bool:
+    """Whether ``line`` begins a new block: a top-level label or a ``pool`` open."""
+    return line.is_top_level_label or (
+        line.opcode == "pool"
+        and bool(line.arguments)
+        and line.arguments[0] != "off"
+    )
+
+
+def block_end(lines: list[Line], start: int) -> int:
+    """Index one past the block beginning at ``start``.
+
+    Scans forward to the next block boundary (top-level label or ``pool`` open),
+    or the end of ``lines``. Shared by :meth:`Source._block_span` and
+    :meth:`~.segment.Segment.delete_block` so "where a block ends" is defined once.
+    """
+    for index in range(start + 1, len(lines)):
+        if _is_block_boundary(lines[index]):
+            return index
+    return len(lines)
 
 
 def _assert_no_org(lines: list[Line]) -> None:
@@ -411,6 +446,33 @@ class Source:
         if prev_index >= 0:
             self.lines[prev_index].size = data_size(self.lines[prev_index])
 
+    def instruction_sizes(self) -> dict[str, int]:
+        """Map each instruction shape to its byte size, learned from this source.
+
+        Keyed by :func:`instruction_shape` (opcode + blanked operands). Because
+        the disassembly writes explicit ``.b``/``.w``/``.l`` widths, each shape
+        has exactly one size (processor M/X mode never changes it); a conflict
+        raises. Pass the result to :func:`~.segment.code_lines` to size inserted
+        instructions without hand-writing an opcode table.
+        """
+        sizes: dict[str, int] = {}
+        for line in self.lines:
+            if (
+                line.opcode is None
+                or line.address is None
+                or line.size == 0
+                or line.opcode.lower() in _DATA_WIDTHS
+            ):
+                continue
+            key = instruction_shape(line)
+            existing = sizes.setdefault(key, line.size)
+            if existing != line.size:
+                msg = (
+                    f"instruction {key!r} has sizes {existing} and {line.size}"
+                )
+                raise ValueError(msg)
+        return sizes
+
     def _boundaries(self) -> list[int]:
         """Sorted indices where a block ends: top-level labels and pools."""
         return sorted(
@@ -423,11 +485,7 @@ class Source:
             msg = f"no top-level label named {label!r}"
             raise KeyError(msg)
         start = self.labels[label]
-        end = next(
-            (index for index in self._boundaries() if index > start),
-            len(self.lines),
-        )
-        return start, end
+        return start, block_end(self.lines, start)
 
     def _block_lines(self, label: str, *, comments: bool) -> list[Line]:
         """Source lines (not copies) for ``label``'s block."""

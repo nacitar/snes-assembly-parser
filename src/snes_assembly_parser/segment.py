@@ -12,27 +12,74 @@ Use :func:`code`, :func:`data`, and :func:`note` to build lines for insertion.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from .source import Line, data_size
+from .source import Line, block_end, data_size, instruction_shape
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+
+def _ensure_anchor(line: Line) -> Line:
+    """Give a byte-emitting, label-less line a placeholder address anchor.
+
+    Inserted code/data always wants an anchor (so :meth:`Segment.render` stamps
+    its real address); callers therefore need not write one. The placeholder's
+    six zero digits fix the emitted width at six.
+    """
+    if line.size and line.label is None:
+        line.label = "#_000000"
+        line.label_sep = " "
+    return line
 
 
 def code(text: str, size: int) -> Line:
-    """A hand-sized line (e.g. an inserted instruction of known byte length)."""
+    """A hand-sized instruction line; an address anchor is added if omitted."""
     line = Line.from_line(text)
     line.size = size
-    return line
+    return _ensure_anchor(line)
 
 
 def data(text: str) -> Line:
-    """A ``db``/``dw``/``dl`` line, auto-sized from its operands."""
+    """A ``db``/``dw``/``dl`` line, auto-sized; anchor added if omitted."""
     line = Line.from_line(text)
     line.size = data_size(line)
-    return line
+    return _ensure_anchor(line)
 
 
 def note(text: str) -> Line:
     """A zero-size line: a label, comment, or blank that emits no bytes."""
     return Line.from_line(text)  # size defaults to 0
+
+
+def notes(texts: Iterable[str]) -> list[Line]:
+    """A list of :func:`note` lines (labels/comments/blanks)."""
+    return [note(text) for text in texts]
+
+
+def datas(texts: Iterable[str]) -> list[Line]:
+    """A list of :func:`data` lines (each auto-sized and anchored)."""
+    return [data(text) for text in texts]
+
+
+def code_lines(texts: Iterable[str], sizes: dict[str, int]) -> list[Line]:
+    """Instruction lines sized from a :meth:`Source.instruction_sizes` map.
+
+    No hand-written size is needed: each line's :func:`~.source.instruction_shape`
+    is looked up in ``sizes`` (raising if absent), and an address anchor is added
+    if omitted. ``sizes`` typically comes from the same source the surrounding
+    code was pulled from.
+    """
+    result: list[Line] = []
+    for text in texts:
+        line = Line.from_line(text)
+        shape = instruction_shape(line)
+        if shape not in sizes:
+            msg = f"no size known for instruction {shape!r}"
+            raise KeyError(msg)
+        line.size = sizes[shape]
+        result.append(_ensure_anchor(line))
+    return result
 
 
 @dataclass
@@ -117,6 +164,21 @@ class Segment:
         begin = self._find(first)
         end = self._find(stop, begin)
         del self.lines[begin:end]
+
+    def delete_block(self, label: str) -> None:
+        """Delete the whole block that top-level ``label`` begins.
+
+        Spans from the label's line to the next block boundary (via
+        :func:`~.source.block_end`), the same rule :class:`~.source.Source` uses to
+        carve blocks -- so a routine/data table can be removed by name without
+        naming the block that follows it.
+        """
+        for index, line in enumerate(self.lines):
+            if line.is_top_level_label and line.label == label:
+                del self.lines[index : block_end(self.lines, index)]
+                return
+        msg = f"no block labelled {label!r}"
+        raise KeyError(msg)
 
     def render(self, org: int) -> str:
         """Emit the segment as text, tracking the PC from ``org``.
