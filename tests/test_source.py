@@ -131,6 +131,87 @@ def test_reindex_after_mutation(source: Source) -> None:
     assert source.labels["Baz"] == len(source.lines) - 2
 
 
+# A source with cross-block references, a same-named routine+pool, an
+# unreferenced block, a dead marker, and an externally-provided symbol.
+CLOSURE_SAMPLE = [
+    "Alpha:",  # 0  -> Beta (JSR), Gamma (JSL)
+    "  JSR Beta",  # 1
+    "  JSL Gamma",  # 2
+    "  RTS",  # 3
+    "Beta:",  # 4  -> Shared (immediate)
+    "  LDA.w #Shared",  # 5
+    "  RTL",  # 6
+    "pool Gamma",  # 7  (same name as the Gamma routine)
+    "  dw $0000",  # 8
+    "pool off",  # 9
+    "Gamma:",  # 10
+    "  RTL",  # 11
+    "Orphan:",  # 12  (referenced by no one)
+    "  RTL",  # 13
+    "UNREACHABLE_00:",  # 14 (dead position marker)
+    "  db $FF",  # 15
+    "Shared:",  # 16 (provided externally)
+    "  db $01",  # 17
+]
+
+
+def names(entries: list[object]) -> list[str]:
+    return [f"{type(e).__name__}:{e.name}" for e in entries]  # type: ignore[attr-defined]
+
+
+@pytest.fixture
+def closure_source() -> Source:
+    return Source.from_content(CLOSURE_SAMPLE)
+
+
+def test_closure_non_recursive_pulls_only_named_roots(
+    closure_source: Source,
+) -> None:
+    assert names(closure_source.closure(["Alpha"], recursive=False)) == [
+        "Block:Alpha"
+    ]
+
+
+def test_closure_recursive_follows_references(closure_source: Source) -> None:
+    # Alpha -> Beta -> Shared, and Alpha -> Gamma (pool emitted before block).
+    assert names(closure_source.closure(["Alpha"], recursive=True)) == [
+        "Block:Alpha",
+        "Block:Beta",
+        "Pool:Gamma",
+        "Block:Gamma",
+        "Block:Shared",
+    ]
+
+
+def test_closure_external_stops_traversal(closure_source: Source) -> None:
+    # Shared is provided elsewhere: referenced but not followed or emitted.
+    assert names(
+        closure_source.closure(["Alpha"], recursive=True, external={"Shared"})
+    ) == ["Block:Alpha", "Block:Beta", "Pool:Gamma", "Block:Gamma"]
+
+
+def test_closure_sorts_out_of_order_roots(closure_source: Source) -> None:
+    # Roots given out of source order are sorted; a same-named pool precedes
+    # its block.
+    assert names(
+        closure_source.closure(["Gamma", "Alpha"], recursive=False)
+    ) == ["Block:Alpha", "Pool:Gamma", "Block:Gamma"]
+
+
+def test_closure_skips_position_marker_roots(closure_source: Source) -> None:
+    assert closure_source.closure(["UNREACHABLE_00"], recursive=False) == []
+
+
+def test_closure_unknown_root_raises(closure_source: Source) -> None:
+    with pytest.raises(KeyError):
+        closure_source.closure(["Nope"], recursive=False)
+
+
+def test_closure_recursive_is_keyword_only(closure_source: Source) -> None:
+    with pytest.raises(TypeError):
+        closure_source.closure(["Alpha"], True)  # type: ignore[misc]
+
+
 def test_trim_trailing_keeps_interior_blanks() -> None:
     lines = [Line.from_line(t) for t in ["A:", "", "  RTS", "", "; tail"]]
     assert as_text(trim_trailing(lines)) == ["A:", "", "  RTS"]

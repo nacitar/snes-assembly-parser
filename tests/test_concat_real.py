@@ -54,6 +54,31 @@ def test_forgotten_pool_errors(bank_0e: Source) -> None:
         )
 
 
+def test_extract_closure_covers_engine_span(bank_0e: Source) -> None:
+    # Recursion from the two engine endpoints (plus the one over-read table
+    # the engine reaches only by an out-of-bounds index) reproduces exactly
+    # the set of live blocks in the RenderText..CreateMessagePointers span.
+    # TheFont is a shared asset provided elsewhere, so it is declared external.
+    entries = bank_0e.closure(
+        ["RenderText", "CreateMessagePointers", "TextCommandLengths"],
+        recursive=True,
+        external={"TheFont", "TheFont_end"},
+    )
+    got = {entry.name for entry in entries if isinstance(entry, Block)}
+
+    labels, pools = bank_0e.labels, bank_0e.pools
+    boundaries = sorted({*labels.values(), *(s for s, _ in pools.values())})
+    start = labels["RenderText"]
+    end = next(b for b in boundaries if b > labels["CreateMessagePointers"])
+    live = {
+        name
+        for name, index in labels.items()
+        if start <= index < end
+        and not name.startswith(("NULL_", "UNREACHABLE_"))
+    }
+    assert got == live
+
+
 def test_dead_block_allowed_and_reserved_keeps_end(bank_0e: Source) -> None:
     kept = bank_0e.concat(
         [

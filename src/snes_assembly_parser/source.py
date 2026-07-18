@@ -31,6 +31,22 @@ _UNREACHABLE_RE = re.compile(r"#?UNREACHABLE_[0-9A-F]+")
 _DATA_WIDTHS = {"db": 1, "dw": 2, "dl": 3, "dd": 4}
 _HEX_RUN = re.compile(r"[0-9A-Fa-f]+")
 
+# A symbol name appearing in an operand (a potential reference to another
+# block/pool). The lookbehind skips sublabel refs (``.foo``), mid-identifier
+# hits, and hex literals (``$FF``); immediate refs (``#TheFont``) still match.
+_OPERAND_IDENT = re.compile(r"(?<![.\w$])[A-Za-z_]\w*")
+
+
+def is_position_marker(name: str) -> bool:
+    """Whether ``name`` marks free ROM (``NULL_``) or dead code
+    (``UNREACHABLE_``).
+
+    These carry their address in the name; they are position markers, not
+    relocatable symbols, so extraction never follows or emits them (their space
+    is instead reserved with an ``org`` -- see :meth:`Source.concat`).
+    """
+    return name.startswith(("NULL_", "UNREACHABLE_"))
+
 
 def data_size(line: Line) -> int:
     """Bytes emitted by a ``db``/``dw``/``dl``/``dd`` line (operands x width).
@@ -600,6 +616,122 @@ class Source:
         _, end = self._block_span(last)
         return self._segment(trim_trailing(self.lines[start:end]))
 
+    def _entries_for(self, name: str) -> list[Block | Pool]:
+        """The block and/or pool declarations for a symbol ``name``.
+
+        A single name can denote both a routine label and its same-named asar
+        pool (the pool holds the routine's scoped data -- see
+        :meth:`concat`); both are returned, pool first. Raises if the name
+        denotes neither.
+        """
+        entries: list[Block | Pool] = []
+        if name in self.pools:
+            entries.append(Pool(name))
+        if name in self.labels:
+            entries.append(Block(name))
+        if not entries:
+            msg = f"no top-level label or pool named {name!r}"
+            raise KeyError(msg)
+        return entries
+
+    def _references(self, name: str) -> set[str]:
+        """Symbol names referenced by ``name``'s operands.
+
+        Scans the operands of every line in ``name``'s block and pool for
+        identifiers, keeping only those defined in this source (external
+        symbols, registers, and hex drop out) and excluding position markers.
+        This is the reference edge used by :meth:`closure`.
+        """
+        refs: set[str] = set()
+        for entry in self._entries_for(name):
+            for line in self._entry_lines(entry, comments=False):
+                for argument in line.arguments:
+                    for token in _OPERAND_IDENT.findall(argument):
+                        if (
+                            token in self.labels or token in self.pools
+                        ) and not is_position_marker(token):
+                            refs.add(token)
+        return refs
+
+    def closure(
+        self,
+        roots: Iterable[str],
+        *,
+        recursive: bool,
+        external: Iterable[str] = (),
+    ) -> list[Block | Pool]:
+        """Resolve ``roots`` to a source-ordered :meth:`concat` list.
+
+        Each root names a routine/data label (or same-named pool) to pull. With
+        ``recursive`` true the set is closed over operand references
+        (:meth:`_references`) -- every block a root invokes or points at,
+        transitively -- so a caller lists only what it directly needs and its
+        dependencies come along. With ``recursive`` false only the named roots
+        are pulled. Either way the result is sorted into source order (so a
+        mirror relocation keeps the original layout) with each name's pool
+        emitted before its block, and position markers are never included.
+
+        ``external`` names symbols that are referenced but provided elsewhere
+        (a shared asset, or a block relocated on its own): recursion neither
+        follows into nor emits them, exactly as if the reference pointed out of
+        this source. Implicit dependencies that are not operand references --
+        e.g. an over-indexed table read reaching past its own end into the next
+        block -- are invisible here; name such a block as an explicit root and
+        :meth:`concat` reserves the intervening space with an ``org``.
+        ``recursive`` is keyword-only so the traversal mode is always stated at
+        the call site.
+        """
+        skip = set(external)
+        seen: set[str] = set()
+        queue = [
+            name
+            for name in roots
+            if name not in skip and not is_position_marker(name)
+        ]
+        while queue:
+            name = queue.pop()
+            if name in seen:
+                continue
+            self._entries_for(name)  # validate existence up front
+            seen.add(name)
+            if recursive:
+                queue.extend(
+                    ref for ref in self._references(name) if ref not in skip
+                )
+        entries: list[tuple[int, Block | Pool]] = [
+            (self._entry_span(entry)[0], entry)
+            for name in seen
+            for entry in self._entries_for(name)
+        ]
+        entries.sort(key=lambda item: item[0])
+        return [entry for _, entry in entries]
+
+    def extract(
+        self,
+        roots: Iterable[str],
+        *,
+        recursive: bool,
+        external: Iterable[str] = (),
+        comments: bool = False,
+        gap_notes: dict[str, str] | None = None,
+    ) -> Segment:
+        """Pull the blocks named by ``roots`` (and, if ``recursive``, their
+        referenced dependencies) as one relocatable :class:`Segment`.
+
+        Sugar over :meth:`closure` + :meth:`concat`: resolves the roots to a
+        source-ordered block/pool list and copies them, reserving any dropped
+        interior space with an ``org`` so every survivor keeps its address.
+        This is the by-need counterpart to :meth:`region` (which takes two span
+        endpoints): list the functions you actually want and let recursion
+        gather the rest. ``external``, ``comments`` and ``gap_notes`` are
+        forwarded to :meth:`closure`/:meth:`concat`.
+        """
+        return self.concat(
+            self.closure(roots, recursive=recursive, external=external),
+            comments=comments,
+            gap_notes=gap_notes,
+        )
+
     def _assert_gap_declared(
         self, start: int, end: int, before: Block | Pool, after: Block | Pool
     ) -> None:
@@ -663,7 +795,7 @@ class Source:
 
     def concat(
         self,
-        items: list[Block | Pool | str],
+        items: Iterable[Block | Pool | str],
         *,
         comments: bool = False,
         gap_notes: dict[str, str] | None = None,
