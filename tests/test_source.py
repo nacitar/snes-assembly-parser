@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from snes_assembly_parser.source import (
@@ -10,6 +12,9 @@ from snes_assembly_parser.source import (
     leading_comments,
     trim_trailing,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 # A small but representative source. Index annotations are relied on by the
 # tests below, so keep them in sync if you edit the list.
@@ -155,7 +160,7 @@ CLOSURE_SAMPLE = [
 ]
 
 
-def names(entries: list[object]) -> list[str]:
+def names(entries: Sequence[object]) -> list[str]:
     return [f"{type(e).__name__}:{e.name}" for e in entries]  # type: ignore[attr-defined]
 
 

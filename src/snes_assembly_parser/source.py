@@ -14,18 +14,13 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
 
+from .address import Address, Indicator
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
 
     from .segment import Segment
-
-# An address anchor: ``#_`` then uppercase hex, then an optional lowercase APU
-# bank tag (o/u/c). Named ``#`` labels (``#Module...``) never match because
-# they lack the ``_``; ``NULL_``/``UNREACHABLE_`` never match (no ``#_``).
-_ADDRESS_RE = re.compile(r"#_(?P<hex>[0-9A-F]+)(?P<tag>[ouc]?)")
-_NULL_RE = re.compile(r"#?NULL_[0-9A-F]+")
-_UNREACHABLE_RE = re.compile(r"#?UNREACHABLE_[0-9A-F]+")
 
 # Data directives and the byte width of each operand.
 _DATA_WIDTHS = {"db": 1, "dw": 2, "dl": 3, "dd": 4}
@@ -269,61 +264,63 @@ class Line:
         return not self.has_content and self.comment is None
 
     @property
-    def is_address_label(self) -> bool:
-        """Whether the label is an address anchor (``#_<hex>`` or
-        ``#_<hex>o``).
+    def anchor(self) -> Address | None:
+        """The label parsed as an :class:`Address`, or ``None``.
 
-        Distinguishes address anchors from scope-neutral named ``#`` labels
-        such as ``#Module0E_02_RenderText``, which are not addresses.
+        Covers live anchors (``#_<hex>``), APU-tagged anchors (``#_<hex>o``),
+        and free/dead markers (``NULL_``/``UNREACHABLE_``). Named ``#`` labels
+        such as ``#Module0E_02_RenderText`` are not addresses and yield
+        ``None``.
         """
-        return (
-            self.label is not None
-            and _ADDRESS_RE.fullmatch(self.label) is not None
-        )
+        return Address.parse(self.label)
+
+    @property
+    def is_address_label(self) -> bool:
+        """Whether the label is a live address anchor (``#_<hex>``).
+
+        Distinguishes live anchors (which participate in byte sizing) from
+        free/dead markers and scope-neutral named ``#`` labels.
+        """
+        anchor = self.anchor
+        return anchor is not None and anchor.is_anchor
 
     @property
     def address(self) -> int | None:
-        """The integer address of an anchor line, or ``None``.
+        """The integer offset of a live anchor line, or ``None``.
 
-        The APU bank tag (``o``/``u``/``c``), if present, does not affect the
-        value.
+        The APU bank tag (``o``/``u``/``c``) does not affect the value, and
+        free/dead markers (``NULL_``/``UNREACHABLE_``) are not live anchors so
+        they return ``None`` here.
         """
-        if self.label is None:
-            return None
-        match = _ADDRESS_RE.fullmatch(self.label)
-        return int(match["hex"], 16) if match is not None else None
+        anchor = self.anchor
+        if anchor is not None and anchor.is_anchor:
+            return anchor.offset
+        return None
 
     @property
     def is_null_label(self) -> bool:
         """Whether the label marks free ROM (``NULL_<hex>``)."""
-        return (
-            self.label is not None
-            and _NULL_RE.fullmatch(self.label) is not None
-        )
+        anchor = self.anchor
+        return anchor is not None and anchor.indicator is Indicator.NULL
 
     @property
     def is_unreachable_label(self) -> bool:
         """Whether the label marks dead code (``UNREACHABLE_<hex>``)."""
-        return (
-            self.label is not None
-            and _UNREACHABLE_RE.fullmatch(self.label) is not None
-        )
+        anchor = self.anchor
+        return anchor is not None and anchor.indicator is Indicator.UNREACHABLE
 
     def set_address(self, value: int) -> None:
-        """Re-stamp an anchor line's address to ``value`` in place.
+        """Re-stamp a live anchor line's address to ``value`` in place.
 
-        Preserves the original hex width, any APU tag, and the surrounding
-        formatting (``label_sep``, colon), so an unedited line still round
-        trips. Raises if the line is not an address anchor.
+        Preserves the original hex width and any APU tag (via
+        :meth:`Address.at`/:meth:`Address.render`), so an unedited line still
+        round trips. Raises if the line is not a live address anchor.
         """
-        match = (
-            None if self.label is None else _ADDRESS_RE.fullmatch(self.label)
-        )
-        if match is None:
+        anchor = self.anchor
+        if anchor is None or not anchor.is_anchor:
             msg = f"line has no address label to set: {self.label!r}"
             raise ValueError(msg)
-        width = len(match["hex"])
-        self.label = f"#_{value:0{width}X}{match['tag']}"
+        self.label = anchor.at(value).render()
 
     def _render_arguments(self) -> str:
         if not self.arguments:
