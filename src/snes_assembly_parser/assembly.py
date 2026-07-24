@@ -107,7 +107,7 @@ def notes(texts: Iterable[str]) -> list[Line]:
 
 def _coerce(lines: Iterable[Line | str]) -> list[Line]:
     """Accept ready :class:`Line` objects or raw strings (parsed as notes)."""
-    return [ln if isinstance(ln, Line) else note(ln) for ln in lines]
+    return [line if isinstance(line, Line) else note(line) for line in lines]
 
 
 # --------------------------------------------------------------------------
@@ -216,7 +216,8 @@ class Assembly:
     def start_address(self) -> int | None:
         """Address of the first live anchor, or ``None``."""
         return next(
-            (ln.address for ln in self.lines if ln.address is not None), None
+            (line.address for line in self.lines if line.address is not None),
+            None,
         )
 
     @property
@@ -225,7 +226,7 @@ class Assembly:
         start = self.start_address
         if start is None:
             return None
-        return start + sum(ln.size for ln in self.lines)
+        return start + sum(line.size for line in self.lines)
 
     def offset(self, delta: int) -> Assembly:
         """Shift every live anchor by ``delta`` in place, and return self.
@@ -457,7 +458,11 @@ class Assembly:
             line = self.lines[index]
             if line.is_null_label or line.is_unreachable_label:
                 index = next(
-                    (b for b in self._boundaries() if b > index),
+                    (
+                        boundary
+                        for boundary in self._boundaries()
+                        if boundary > index
+                    ),
                     len(self.lines),
                 )
                 continue
@@ -627,7 +632,9 @@ class Assembly:
         swapping an operand -- a literal or address -- in place.
         """
         index = next(
-            i for i, ln in enumerate(self.lines) if ln.address == address
+            index
+            for index, line in enumerate(self.lines)
+            if line.address == address
         )
         anchor = self.lines[index].label
         size = self.lines[index].size

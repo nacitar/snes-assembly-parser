@@ -22,6 +22,8 @@ from .assembly import (
     note,
     notes,
 )
+from .hooking import LandingPad
+from .patcher import Patcher
 from .rom import Caller, Rom
 from .segment import Segment, code, code_lines
 from .sizing import (
@@ -49,7 +51,9 @@ __all__ = [
     "ComputedSizer",
     "HybridSizer",
     "Indicator",
+    "LandingPad",
     "Line",
+    "Patcher",
     "Pool",
     "Rom",
     "Segment",

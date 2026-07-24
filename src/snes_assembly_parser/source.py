@@ -150,12 +150,12 @@ def _split_arguments(text: str) -> tuple[list[str], list[str]]:
 
     arguments = [part.strip() for part in parts]
     separators = [
-        parts[i][len(parts[i].rstrip()) :]  # trailing ws of left operand
+        parts[index][len(parts[index].rstrip()) :]  # trailing ws of left
         + ","
-        + parts[i + 1][
-            : len(parts[i + 1]) - len(parts[i + 1].lstrip())
+        + parts[index + 1][
+            : len(parts[index + 1]) - len(parts[index + 1].lstrip())
         ]  # leading ws of right
-        for i in range(len(parts) - 1)
+        for index in range(len(parts) - 1)
     ]
     return arguments, separators
 
@@ -750,7 +750,11 @@ class Source:
                 # Skip the whole dead/free block to its next boundary. Those
                 # labels are top-level, hence in self.labels and _boundaries().
                 index = next(
-                    (b for b in self._boundaries() if b > index),
+                    (
+                        boundary
+                        for boundary in self._boundaries()
+                        if boundary > index
+                    ),
                     len(self.lines),
                 )
                 continue

@@ -108,6 +108,20 @@ def test_rename_leaves_callers_untouched(program: Path) -> None:
     assert any(c.opcode == "JSL" for c in rom.callers("Alpha"))
 
 
+def test_hook_frees_the_name_and_leaves_callers(program: Path) -> None:
+    rom = Rom.load(program)
+    rom.hook("Alpha", comment=("; relocated to bank $2N",))
+    unit = rom.units[rom.unit_of("UNREACHABLE_Alpha")]
+    # the definition is freed (marker prefix), with the comment above it...
+    assert "UNREACHABLE_Alpha" in unit.labels
+    assert "Alpha" not in unit.labels
+    assert any(
+        line.comment and "relocated" in line.comment for line in unit.lines
+    )
+    # ...and the JSL / dl references are untouched (resolve to the new copy)
+    assert any(c.opcode == "JSL" for c in rom.callers("Alpha"))
+
+
 def test_incsrc_cycle_detected(tmp_path: Path) -> None:
     (tmp_path / "a.asm").write_text('incsrc "b.asm"\n')
     (tmp_path / "b.asm").write_text('incsrc "a.asm"\n')

@@ -149,6 +149,20 @@ class Rom:
         for old, new in pairs:
             self.rename(old, new)
 
+    def hook(self, name: str, *, comment: Iterable[str] = ()) -> None:
+        """Free ``name`` (prefix ``UNREACHABLE_``) in its defining unit.
+
+        This is the freeing half of an interception: the original body stays
+        byte-identical under its new dead-code name, the bare name is left for
+        a relocated copy to claim, and same-bank ``JSR`` callers -- which
+        cannot reach that copy across banks -- are found with :meth:`callers`,
+        so the driver knows where a landing pad is still needed. ``comment``
+        lines go above the freed definition.
+        """
+        from .patcher import Patcher
+
+        Patcher(self.units[self.unit_of(name)]).free(name, comment=comment)
+
     # ---- free space ----
     def free_regions(self) -> list[tuple[Path, int, int]]:
         """Every free-ROM (``NULL_``) region as ``(unit, address, bytes)``.
@@ -165,11 +179,16 @@ class Rom:
                 end = block_end(unit.lines, index)
                 span = unit.lines[index:end]
                 address = next(
-                    (ln.address for ln in span if ln.address is not None), None
+                    (
+                        line.address
+                        for line in span
+                        if line.address is not None
+                    ),
+                    None,
                 )
                 if address is not None:
                     regions.append(
-                        (path, address, sum(ln.size for ln in span))
+                        (path, address, sum(line.size for line in span))
                     )
         return regions
 
