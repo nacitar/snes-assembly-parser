@@ -26,6 +26,8 @@ ROUND_TRIP = [
     "#_0E9885: JSR (.vectors,X)",
     "  LDA.w #$0030   ; load value",
     "  RTS",
+    "#_0EF40C: INY ; +5",
+    "#_008205: RTS  ; operand-less opcode, two spaces before comment",
     "Label: LDA.b $11 ; inline",
     "pool CheckForSpecialOverworldTrigger",
     "pool off",

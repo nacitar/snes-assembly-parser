@@ -338,9 +338,12 @@ class Line:
             colon = ":" if self.label_colon else ""
             out += f"{self.label}{colon}{self.label_sep}"
         if self.opcode is not None:
-            out += self.opcode
+            # ``opcode_sep`` is the whitespace right after the opcode; it must
+            # be emitted even with no arguments (an operand-less opcode before
+            # an inline comment, e.g. ``INY ; +5``), else the space is lost.
+            out += self.opcode + self.opcode_sep
             if self.arguments:
-                out += self.opcode_sep + self._render_arguments()
+                out += self._render_arguments()
         out += self.trail
         if self.comment is not None:
             out += f";{self.comment}"
