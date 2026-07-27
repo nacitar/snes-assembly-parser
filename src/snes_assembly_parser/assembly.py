@@ -727,6 +727,33 @@ class Assembly:
         for label in labels:
             self.delete_block(label)
 
+    def return_long(self, *, restore_bank: bool = False) -> None:
+        """Rewrite this routine's terminal ``RTS`` into a long return.
+
+        A routine relocated to another bank is reached across banks, so it must
+        return with ``RTL`` rather than the same-bank ``RTS``. With
+        ``restore_bank`` the return first pulls a data bank the entry
+        trampoline pushed (``PLB`` then ``RTL``) -- pair it with
+        :func:`dbr_trampolines`, whose ``PHB`` it balances; otherwise a bare
+        ``RTS`` -> ``RTL`` (same size). Only the final ``RTS`` is rewritten.
+        """
+        for index in range(len(self.lines) - 1, -1, -1):
+            line = self.lines[index]
+            if line.opcode == "RTS":
+                if restore_bank:
+                    line.opcode, line.arguments = "PLB", []
+                    rtl = Line.from_line(f"#_{line.address:06X}: RTL")
+                    rtl.size = 1
+                    self.lines.insert(index + 1, rtl)
+                else:
+                    line.opcode = "RTL"
+                self._mutated()
+                return
+            if line.opcode is not None:
+                break
+        msg = "return_long: routine does not end in RTS"
+        raise ValueError(msg)
+
     def comment_block(self, name: str) -> list[Line]:
         """The comment header directly above top-level block ``name``."""
         start = self._block_span(name)[0]
@@ -813,3 +840,27 @@ def join(pieces: Sequence[Assembly]) -> Assembly:
     for piece in pieces:
         result.extend(piece)
     return result
+
+
+def dbr_trampolines(names: Iterable[str]) -> Assembly:
+    """Data-bank-setting entry trampolines for routines relocated to a bank.
+
+    A routine moved to another bank still reads its data bank-relative, so a
+    cross-bank caller must enter with the data bank register (DBR) pointing at
+    the new bank. For each ``name`` this emits a stub::
+
+        name:
+            PHB              ; save the caller's data bank
+            PHK : PLB        ; set DBR to this (the relocated) bank
+            JMP.w name_body  ; run the routine, which ends PLB + RTL
+
+    so ``name`` is the callable entry and ``name_body`` is the relocated body
+    (rewrite its return with :meth:`Assembly.return_long` and ``restore_bank``
+    -- its ``PLB`` balances the ``PHB`` here). Names are bare; a relocation's
+    ``EN_`` namespacing renames the stub and its ``name_body`` target together.
+    """
+    lines: list[Line] = []
+    for name in names:
+        lines.append(note(f"{name}:"))
+        lines += instructions(["PHB", "PHK", "PLB", f"JMP.w {name}_body"])
+    return Assembly(lines)

@@ -62,10 +62,14 @@ _BANK_LOCAL_CALLS = frozenset({"JSR", "BRA", "BRL", "JMP"})
 
 @dataclass(frozen=True)
 class Caller:
-    """One reference to a symbol: the unit it lives in and the opcode used."""
+    """One reference to a symbol: where it lives, the opcode, its block."""
 
     unit: Path
     opcode: str  # e.g. "JSR", "JSL", "dl", "dw"; "" for a bare operand ref
+    #: The top-level block the reference sits in (``None`` if it is loose at a
+    #: bank's top). Lets a hook tell an in-subsystem caller (which relocates
+    #: with it) from one that stays behind.
+    block: str | None = None
 
     @property
     def is_bank_local(self) -> bool:
@@ -168,17 +172,41 @@ class Rom:
 
         A reference is an operand token equal to ``name`` (or ``name`` as the
         base of a pool-qualified ``name_sub`` token); the :class:`Caller`
-        records the opcode so :meth:`hook` can tell a bank-local ``JSR`` from a
-        cross-bank ``JSL`` or a data pointer.
+        records the opcode (so a bank-local ``JSR`` is told from a cross-bank
+        ``JSL`` or a data pointer) and the top-level block it sits in (scanning
+        every line, so a reference outside any function is found too).
         """
         token = re.compile(rf"(?<![\w.])({re.escape(name)})(?![\w])")
-        return [
-            Caller(path, line.opcode or "")
-            for path in self.order
-            for line in self.units[path].lines
-            if line.opcode is not None
-            and any(token.search(arg) for arg in line.arguments)
-        ]
+        found: list[Caller] = []
+        for path in self.order:
+            block: str | None = None
+            for line in self.units[path].lines:
+                if line.is_top_level_label and line.label is not None:
+                    block = line.label
+                if line.opcode is not None and any(
+                    token.search(arg) for arg in line.arguments
+                ):
+                    found.append(Caller(path, line.opcode, block))
+        return found
+
+    def needs_landing_pad(
+        self, name: str, *, relocated: Iterable[str] = ()
+    ) -> bool:
+        """Whether hooking ``name`` needs a landing pad (not a bare alias).
+
+        A relocated routine sits a bank away, so a same-bank caller
+        (``JSR``/``BRL``/...) can only reach it if that caller *also* moves to
+        the same bank -- i.e. its block is among ``relocated`` (the source
+        blocks this hook's relocation carries with it). A pad is needed exactly
+        when some bank-local caller stays behind: its block is not relocated
+        (or it is loose at a bank's top). Cross-bank callers (``JSL``, data
+        pointers) always reach the copy directly, so they never force a pad.
+        """
+        kept = frozenset(relocated)
+        return any(
+            caller.is_bank_local and caller.block not in kept
+            for caller in self.callers(name)
+        )
 
     # ---- editing that spans files ----
     def rename(self, old: str, new: str) -> None:

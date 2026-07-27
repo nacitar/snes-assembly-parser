@@ -88,6 +88,23 @@ def test_caller_is_bank_local() -> None:
     assert not Caller("x", "dl").is_bank_local  # type: ignore[arg-type]
 
 
+def test_callers_record_enclosing_block(program: Path) -> None:
+    rom = Rom.load(program)
+    blocks = {c.opcode: c.block for c in rom.callers("Alpha")}
+    # the JSL sits in Beta; the dl pointer sits in PointerTable
+    assert blocks == {"JSL": "Beta", "dl": "PointerTable"}
+
+
+def test_needs_landing_pad_only_for_a_caller_that_stays(program: Path) -> None:
+    rom = Rom.load(program)
+    # Beta's one caller is a same-bank JSR inside Beta itself: if Beta is
+    # relocated the caller moves with it (no pad); otherwise it stays (pad).
+    assert rom.needs_landing_pad("Beta")
+    assert not rom.needs_landing_pad("Beta", relocated={"Beta"})
+    # Alpha is reached only cross-bank (JSL) + a data pointer: never a pad.
+    assert not rom.needs_landing_pad("Alpha")
+
+
 def test_free_regions(program: Path) -> None:
     rom = Rom.load(program)
     regions = rom.free_regions()

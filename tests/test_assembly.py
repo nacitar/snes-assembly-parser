@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from snes_assembly_parser.assembly import Assembly, instructions
+from snes_assembly_parser.assembly import (
+    Assembly,
+    dbr_trampolines,
+    instructions,
+)
 
 SAMPLE = [
     "; header for Foo",
@@ -95,3 +99,39 @@ def test_replace_all_batches(asm: Assembly) -> None:
 def test_render_relocates(asm: Assembly) -> None:
     foo = asm.function("Foo")
     assert "#_108000: LDA.w #$0000" in foo.render(0x108000)
+
+
+def _routine() -> Assembly:
+    return Assembly.from_content(
+        ["Foo:", "#_008000: LDA.w #$0000", "#_008003: RTS"]
+    )
+
+
+def _opcodes(asm: Assembly) -> list[str]:
+    return [line.opcode for line in asm.lines if line.opcode]
+
+
+def test_return_long_rewrites_terminal_rts() -> None:
+    asm = _routine()
+    asm.return_long()
+    assert _opcodes(asm)[-1] == "RTL"  # RTS -> RTL
+
+
+def test_return_long_restore_bank_pulls_bank_then_returns() -> None:
+    asm = _routine()
+    asm.return_long(restore_bank=True)
+    # RTS -> PLB (restore the trampoline's pushed data bank) + a fresh RTL.
+    assert _opcodes(asm)[-2:] == ["PLB", "RTL"]
+
+
+def test_return_long_raises_without_rts() -> None:
+    asm = Assembly.from_content(["Foo:", "#_008000: RTL"])
+    with pytest.raises(ValueError, match="does not end in RTS"):
+        asm.return_long()
+
+
+def test_dbr_trampolines_builds_entry_stubs() -> None:
+    text = dbr_trampolines(["Foo", "Bar"]).render(0x2D8000)
+    assert "Foo:" in text and "Bar:" in text
+    assert "PHB" in text and "PHK" in text and "PLB" in text
+    assert "JMP.w Foo_body" in text and "JMP.w Bar_body" in text
