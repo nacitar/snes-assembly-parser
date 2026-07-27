@@ -124,6 +124,9 @@ class Assembly:
 
     lines: list[Line] = field(default_factory=list)
     sizer: Sizer = field(default_factory=AnchorSizer)
+    #: Whether the source ended with a trailing newline (preserved by
+    #: :meth:`text` so an untouched file round-trips byte-for-byte).
+    final_newline: bool = True
     _labels: dict[str, int] | None = field(
         default=None, init=False, repr=False
     )
@@ -143,17 +146,26 @@ class Assembly:
 
     @classmethod
     def from_content(
-        cls, content: Iterable[str], *, sizer: Sizer | None = None
+        cls,
+        content: Iterable[str],
+        *,
+        sizer: Sizer | None = None,
+        final_newline: bool = True,
     ) -> Assembly:
         """Parse text lines into a sized :class:`Assembly`."""
-        return cls.from_lines(
+        assembly = cls.from_lines(
             (Line.from_line(text) for text in content), sizer=sizer
         )
+        assembly.final_newline = final_newline
+        return assembly
 
     @classmethod
     def from_path(cls, path: Path, *, sizer: Sizer | None = None) -> Assembly:
         """Parse an asar source file into a sized :class:`Assembly`."""
-        return cls.from_content(path.read_text().splitlines(), sizer=sizer)
+        raw = path.read_text()
+        return cls.from_content(
+            raw.splitlines(), sizer=sizer, final_newline=raw.endswith("\n")
+        )
 
     # ---- indexing (lazy; invalidated on mutation) ----
     def _mutated(self) -> None:
@@ -774,7 +786,8 @@ class Assembly:
     # ---- output ----
     def text(self) -> str:
         """Verbatim text (no address re-stamping); the exact round trip."""
-        return "\n".join(str(line) for line in self.lines) + "\n"
+        body = "\n".join(str(line) for line in self.lines)
+        return body + "\n" if self.final_newline else body
 
     def write(self, path: Path) -> None:
         """Write :meth:`text` to ``path``."""
@@ -782,7 +795,11 @@ class Assembly:
 
     def copy(self) -> Assembly:
         """A deep-ish copy (independent line objects, same sizer)."""
-        return Assembly([copy.copy(line) for line in self.lines], self.sizer)
+        return Assembly(
+            [copy.copy(line) for line in self.lines],
+            self.sizer,
+            self.final_newline,
+        )
 
     def extend(self, other: Assembly) -> None:
         """Append another assembly's lines (used to join placed pieces)."""

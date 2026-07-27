@@ -17,15 +17,41 @@ callers untouched), :meth:`~Rom.hook`, free-space, and writing units back.
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 
 from .assembly import Assembly
 from .source import block_end
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
-    from pathlib import Path
+    from collections.abc import Callable, Iterable, Sequence
+
+    from .hooking import LandingPad
+    from .patcher import Patcher
+    from .source import Block, Pool
+
+
+class Placed(Protocol):
+    """A body pinned at a ROM address (e.g. ``graft.Placement``).
+
+    ``org`` gives the absolute address (so :meth:`Rom.write` can group pieces
+    by bank); :meth:`render` emits the piece's own source text (the ``org``
+    directive, an optional note, and the body) -- so the emitted form lives
+    with the piece, not here.
+    """
+
+    org: int
+
+    def render(self) -> str: ...
+
+
+class Relocatable(Protocol):
+    """Anything yielding :class:`Placed` pieces (e.g. ``graft.Relocation``)."""
+
+    def placements(self) -> Sequence[Placed]: ...
+
 
 _INCSRC = re.compile(r'^\s*incsrc\s+"(?P<path>[^"]+)"')
 # Control-transfer opcodes that are bank-local (a relative/same-bank call a
@@ -58,6 +84,18 @@ class Rom:
     #: The entry file, and the source order the units were included in.
     entry: Path | None = None
     order: list[Path] = field(default_factory=list)
+    #: Relocated pieces added by :meth:`add`, materialised into ``bank_XX.asm``
+    #: units by :meth:`write` (grouped by ``org >> 16``).
+    _relocated: list[Placed] = field(default_factory=list)
+
+    def copy(self) -> Rom:
+        """An independent working copy (units deep-copied, ready to mutate)."""
+        return Rom(
+            units={path: unit.copy() for path, unit in self.units.items()},
+            entry=self.entry,
+            order=list(self.order),
+            _relocated=list(self._relocated),
+        )
 
     # ---- construction ----
     @classmethod
@@ -97,17 +135,25 @@ class Rom:
 
     # ---- whole-program indexes ----
     def unit_of(self, name: str) -> Path:
-        """The unit path that defines top-level ``name`` (function or pool)."""
+        """The unit path that defines ``name`` (function, pool, or ``#name``).
+
+        Matches a plain ``name:`` label, the address-transparent ``#name:``
+        form (same symbol, still emits its address -- so it is not in the
+        top-level label index and must be found by scanning), or a ``pool
+        name``.
+        """
+        marker = f"#{name}"
         for path in self.order:
             unit = self.units[path]
-            if name in unit.labels or name in unit.pools:
+            if name in unit.pools:
                 return path
+            for line in unit.lines:
+                if line.label in (name, marker) or (
+                    line.opcode == "pool" and line.arguments == [name]
+                ):
+                    return path
         msg = f"no top-level label or pool named {name!r}"
         raise KeyError(msg)
-
-    def function(self, name: str, *, comments: bool = False) -> Assembly:
-        """A fresh copy of function ``name`` (searched across all units)."""
-        return self.units[self.unit_of(name)].function(name, comments=comments)
 
     @property
     def functions(self) -> list[str]:
@@ -163,6 +209,154 @@ class Rom:
 
         Patcher(self.units[self.unit_of(name)]).free(name, comment=comment)
 
+    # ---- extraction (by name, from the owning unit) ----
+    @property
+    def pool_names(self) -> set[str]:
+        """Every ``pool`` name across all units."""
+        return {name for path in self.order for name in self.units[path].pools}
+
+    @property
+    def label_names(self) -> set[str]:
+        """Every top-level label across all units."""
+        return {
+            name for path in self.order for name in self.units[path].labels
+        }
+
+    def _unit(self, name: str) -> Assembly:
+        return self.units[self.unit_of(name)]
+
+    def function(self, name: str, *, comments: bool = False) -> Assembly:
+        """A fresh copy of function ``name`` (searched across all units)."""
+        return self._unit(name).function(name, comments=comments)
+
+    def pool(self, name: str, *, comments: bool = False) -> Assembly:
+        """A fresh copy of pool ``name`` (searched across all units)."""
+        return self._unit(name).pool(name, comments=comments)
+
+    def blocks_until(self, name: str) -> Assembly:
+        """The run of blocks up to (excluding) ``name``, from its unit."""
+        return self._unit(name).blocks_until(name)
+
+    def extract(
+        self,
+        roots: str | Iterable[str],
+        *,
+        recursive: bool,
+        external: Iterable[str] = (),
+        comments: bool = False,
+        gap_notes: dict[str, str] | None = None,
+    ) -> Assembly:
+        """Recursively pull ``roots`` + their references from the owning unit.
+
+        The roots must be co-located in one unit (ALTTP subsystems are), so the
+        closure is taken within it -- the same as loading that bank and calling
+        :meth:`~.assembly.Assembly.extract`, but by name, no file named.
+        """
+        names = (roots,) if isinstance(roots, str) else tuple(roots)
+        return self._unit(names[0]).extract(
+            names,
+            recursive=recursive,
+            external=external,
+            comments=comments,
+            gap_notes=gap_notes,
+        )
+
+    def closure(
+        self,
+        roots: str | Iterable[str],
+        *,
+        recursive: bool,
+        external: Iterable[str] = (),
+    ) -> list[Block | Pool]:
+        """The source-ordered closure of ``roots``, from the owning unit."""
+        names = (roots,) if isinstance(roots, str) else tuple(roots)
+        return self._unit(names[0]).closure(
+            names, recursive=recursive, external=external
+        )
+
+    def concat(
+        self,
+        items: Iterable[Block | Pool],
+        *,
+        comments: bool = False,
+        gap_notes: dict[str, str] | None = None,
+    ) -> Assembly:
+        """Concatenate the named blocks/pools (from their unit) in order."""
+        items = list(items)
+        return self._unit(items[0].name).concat(
+            items, comments=comments, gap_notes=gap_notes
+        )
+
+    # ---- whole-program edits (routed by name/address to the owning unit) ----
+    def unit_at(self, address: int) -> Path:
+        """The unit whose lines carry the ``#_<hex>`` anchor at ``address``."""
+        for path in self.order:
+            if any(line.address == address for line in self.units[path].lines):
+                return path
+        msg = f"no line anchored at ${address:06X}"
+        raise KeyError(msg)
+
+    def _patcher_at(self, address: int) -> Patcher:
+        from .patcher import Patcher
+
+        return Patcher(self.units[self.unit_at(address)])
+
+    def set_operand(
+        self, address: int, instruction: str, *, comment: str | None = None
+    ) -> None:
+        """Rewrite the instruction at ``address`` (finds the bank itself)."""
+        self._patcher_at(address).set_operand(
+            address, instruction, comment=comment
+        )
+
+    def rewrite_reference(self, address: int, old: str, new: str) -> None:
+        """Retarget operand ``old`` -> ``new`` at ``address``."""
+        self._patcher_at(address).rewrite_reference(address, old, new)
+
+    def relocate_block(
+        self,
+        address: int,
+        jml_target: str,
+        *,
+        resume: int,
+        orphan: tuple[int, ...] = (),
+        comment: Iterable[str] = (),
+    ) -> None:
+        """Redirect the inline block at ``address`` to ``jml_target``."""
+        self._patcher_at(address).relocate_block(
+            address, jml_target, resume=resume, orphan=orphan, comment=comment
+        )
+
+    def insert_before(self, locator: str | int, lines: Iterable[str]) -> None:
+        """Insert ``lines`` above label/anchor ``locator`` (finds its unit)."""
+        from .patcher import Patcher
+
+        path = (
+            self.unit_at(locator)
+            if isinstance(locator, int)
+            else self.unit_of(locator)
+        )
+        Patcher(self.units[path]).insert_before(locator, lines)
+
+    def landing_pads(
+        self,
+        free_label: str,
+        pads: list[LandingPad],
+        *,
+        header: Iterable[str] = (),
+    ) -> None:
+        """Fill the ``NULL_`` region ``free_label`` with forwarding stubs."""
+        from .patcher import Patcher
+
+        Patcher(self.units[self.unit_of(free_label)]).landing_pads(
+            free_label, pads, header=header
+        )
+
+    # ---- adding relocated code + writing the whole program ----
+    def add(self, relocation: Relocatable) -> None:
+        """Fold a relocation's placed pieces in; :meth:`write` banks them."""
+        self._relocated.extend(relocation.placements())
+
     # ---- free space ----
     def free_regions(self) -> list[tuple[Path, int, int]]:
         """Every free-ROM (``NULL_``) region as ``(unit, address, bytes)``.
@@ -193,13 +387,50 @@ class Rom:
         return regions
 
     # ---- output ----
-    def write(self, remap: dict[Path, Path] | None = None) -> None:
-        """Write every unit back to its path (or a remapped one).
+    def write(
+        self, out_dir: Path, *, bank_header: Callable[[int], str] | None = None
+    ) -> list[str]:
+        """Write the program into ``out_dir``; return the generated banks.
 
-        ``remap`` overrides individual output paths (e.g. write the patched
-        pristine banks into the working tree). Units are written verbatim, so
-        an unedited unit round-trips exactly.
+        Every loaded unit (``main.asm``, ``bank_XX.asm``, support files) is
+        written back at its path *relative to the program root* (the entry
+        file's directory), so a subdir like ``resources/`` is preserved and an
+        untouched unit round-trips byte-for-byte. The pieces from :meth:`add`
+        are grouped by ROM bank (``org >> 16``) into fresh ``bank_XX.asm``
+        files beside the base banks; wiring them into ``main.asm`` (the
+        ``incsrc`` lines and any ROM padding) is the driver's job, as that
+        block is program-specific. ``bank_header(bank)`` names the header for a
+        generated bank (a plain one by default). Returns the generated
+        ``bank_XX.asm`` names, in bank order.
         """
-        remap = remap or {}
-        for path, unit in self.units.items():
-            unit.write(remap.get(path, path))
+        out_dir = Path(out_dir)
+        root = (self.entry.parent if self.entry else out_dir).resolve()
+
+        by_bank: dict[int, list[Placed]] = defaultdict(list)
+        for piece in self._relocated:
+            by_bank[piece.org >> 16].append(piece)
+        generated: list[str] = []
+        for bank in sorted(by_bank):
+            name = f"bank_{bank:02X}.asm"
+            blocks = sorted(by_bank[bank], key=lambda piece: piece.org)
+            body = "\n\n".join(piece.render() for piece in blocks)
+            header = (
+                bank_header(bank)
+                if bank_header
+                else f"; {name} -- generated; do not hand-edit."
+            )
+            dest = out_dir / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(header.rstrip("\n") + "\n\n" + body + "\n")
+            generated.append(name)
+
+        for path in self.order:
+            try:
+                rel: Path = path.resolve().relative_to(root)
+            except ValueError:
+                rel = Path(path.name)
+            dest = out_dir / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            self.units[path].write(dest)
+
+        return generated

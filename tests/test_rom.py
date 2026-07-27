@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from snes_assembly_parser.rom import Caller, Rom
+from snes_assembly_parser.rom import Caller, Placed, Rom
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -120,6 +120,43 @@ def test_hook_frees_the_name_and_leaves_callers(program: Path) -> None:
     )
     # ...and the JSL / dl references are untouched (resolve to the new copy)
     assert any(c.opcode == "JSL" for c in rom.callers("Alpha"))
+
+
+def test_write_roundtrips_units_preserves_subdirs_and_banks(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "src"
+    (root / "resources").mkdir(parents=True)
+    (root / "main.asm").write_text(
+        'incsrc "bank_00.asm"\nincsrc "resources/data.asm"\n'
+    )
+    (root / "bank_00.asm").write_text(BANK_00)
+    # a support file in a subdir, deliberately WITHOUT a trailing newline
+    (root / "resources" / "data.asm").write_text("Data:\n#_038000: db $01")
+    rom = Rom.load(root / "main.asm")
+
+    class _Piece:
+        org = 0x208000
+
+        def render(self) -> str:
+            return "; relocated\norg $208000\nEN_Foo:\n#_208000: RTL\n"
+
+    class _Reloc:
+        def placements(self) -> list[Placed]:
+            return [_Piece()]
+
+    rom.add(_Reloc())
+    out = tmp_path / "out"
+    rom.write(out)
+    # unchanged units round-trip byte-for-byte: subdir kept, no newline added
+    assert (out / "bank_00.asm").read_text() == BANK_00
+    assert (
+        out / "resources" / "data.asm"
+    ).read_text() == "Data:\n#_038000: db $01"
+    # the added piece lands in a generated bank named for its org's bank
+    generated = (out / "bank_20.asm").read_text()
+    assert "; relocated" in generated
+    assert "org $208000" in generated
 
 
 def test_incsrc_cycle_detected(tmp_path: Path) -> None:
