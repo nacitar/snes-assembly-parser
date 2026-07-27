@@ -28,6 +28,7 @@ from .source import block_end
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
 
+    from .assembly import Entry
     from .hooking import LandingPad
     from .patcher import Patcher
     from .source import Block, Pool
@@ -276,14 +277,20 @@ class Rom:
 
     def concat(
         self,
-        items: Iterable[Block | Pool],
+        items: Iterable[Entry],
         *,
         comments: bool = False,
         gap_notes: dict[str, str] | None = None,
     ) -> Assembly:
-        """Concatenate the named blocks/pools (from their unit) in order."""
+        """Concatenate the named blocks/pools (from their unit) in order.
+
+        Each item is a :class:`Block`, a :class:`Pool`, or a bare ``str``
+        (a block name); the owning unit is the one defining the first item.
+        """
         items = list(items)
-        return self._unit(items[0].name).concat(
+        first = items[0]
+        name = first if isinstance(first, str) else first.name
+        return self._unit(name).concat(
             items, comments=comments, gap_notes=gap_notes
         )
 
