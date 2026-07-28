@@ -39,7 +39,7 @@ def test_indexes_functions_and_pools(asm: Assembly) -> None:
 
 
 def test_function_extract_copies(asm: Assembly) -> None:
-    foo = asm.function("Foo", comments=True)
+    foo = asm.block("Foo", comments=True)
     assert foo.render().splitlines()[0] == "; header for Foo"
     # editing the copy does not touch the parent
     foo.replace("LDA.w #$0000", "LDA.w #$FFFF", count=1)
@@ -47,7 +47,7 @@ def test_function_extract_copies(asm: Assembly) -> None:
 
 
 def test_offset_shifts_anchors(asm: Assembly) -> None:
-    foo = asm.function("Foo")
+    foo = asm.block("Foo")
     foo.offset(0x200000)
     assert foo.start_address == 0x208000
     assert "#_208000: LDA.w #$0000" in foo.render()
@@ -83,7 +83,7 @@ def test_comment_block_read(asm: Assembly) -> None:
 
 
 def test_insert_uses_computed_sizes(asm: Assembly) -> None:
-    foo = asm.function("Foo")
+    foo = asm.block("Foo")
     foo.insert_after("LDA.w #$0000", instructions(["DEX", "DEX"]))
     # +2 bytes (two 1-byte DEX): RTS was at $008006, now at $008008
     assert "#_008008: RTS" in foo.render()
@@ -97,7 +97,7 @@ def test_replace_all_batches(asm: Assembly) -> None:
 
 
 def test_render_relocates(asm: Assembly) -> None:
-    foo = asm.function("Foo")
+    foo = asm.block("Foo")
     assert "#_108000: LDA.w #$0000" in foo.render(0x108000)
 
 
@@ -135,3 +135,80 @@ def test_dbr_trampolines_builds_entry_stubs() -> None:
     assert "Foo:" in text and "Bar:" in text
     assert "PHB" in text and "PHK" in text and "PLB" in text
     assert "JMP.w Foo_body" in text and "JMP.w Bar_body" in text
+
+
+def test_splice_replaces_a_single_line() -> None:
+    asm = Assembly.from_content(SAMPLE)
+    asm.splice("LDA.w #$0000", ["#_008000: NOP"])
+    text = asm.render()
+    assert "LDA.w #$0000" not in text
+    assert "#_008000: NOP" in text
+
+
+def test_splice_replaces_a_range_excluding_stop() -> None:
+    asm = Assembly.from_content(SAMPLE)
+    asm.splice("LDA.w #$0000", ["#_008000: NOP"], until="RTS")
+    text = asm.render()
+    # both the LDA and the JSR in [first, until) are gone; RTS survives
+    assert "JSR Bar" not in text
+    assert "RTS" in text
+    assert "#_008000: NOP" in text
+
+
+def test_delete_single_line_without_until() -> None:
+    asm = Assembly.from_content(SAMPLE)
+    asm.delete("JSR Bar")
+    assert "JSR Bar" not in asm.render()
+    assert "LDA.w #$0000" in asm.render()  # neighbours untouched
+
+
+HASH_SAMPLE = [
+    "Enclosing:",
+    "#_00C000: LDA.b #$03",
+    "#Helper:",
+    "#_00C002: STA.b $14",
+    ".exit",
+    "#_00C004: RTS",
+    "",
+    "Next:",
+    "#_00C005: RTL",
+]
+
+
+def test_block_pulls_scope_transparent_hash_label() -> None:
+    asm = Assembly.from_content(HASH_SAMPLE)
+    helper = asm.block("Helper")
+    text = helper.render()
+    # the # is dropped so it is a standalone, namespaceable block
+    assert text.splitlines()[0].startswith("Helper:")
+    assert "#Helper:" not in text
+    # spans only Helper's body, up to the next top-level label
+    assert "STA.b $14" in text
+    assert "RTL" not in text  # did not run into Next
+    # a #-label is not a top-level boundary, so Enclosing is unaffected
+    assert "Helper" not in asm.functions
+
+
+def test_apply_edits_mixes_tuples_and_callables() -> None:
+    asm = Assembly.from_content(SAMPLE)
+
+    def to_nop(block: Assembly) -> None:
+        block.replace("JSR Bar", "NOP", 1)
+
+    asm.apply_edits([("LDA.w #$0000", "LDA.w #$FFFF", 1), to_nop])
+    text = asm.render()
+    assert "LDA.w #$FFFF" in text  # tuple replace
+    assert "JSR Bar" not in text and "NOP" in text  # callable
+
+
+def test_apply_edit_table_applies_every_block() -> None:
+    asm = Assembly.from_content(SAMPLE)
+    asm.apply_edit_table(
+        {
+            "Foo": [("LDA.w #$0000", "LDA.w #$FFFF", 1)],
+            "Bar": [("LDA.w Table,Y", "LDA.w Other,Y", 1)],
+        }
+    )
+    text = asm.render()
+    assert "LDA.w #$FFFF" in text
+    assert "LDA.w Other,Y" in text

@@ -40,8 +40,14 @@ from .source import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
     from pathlib import Path
+
+# One modification keyed under the block it targets: a ``(old, new, count)``
+# substring replace, or a callable handed the Assembly to edit freely (splice,
+# annotate, duplicate rows). A ``dict[str, list[Edit]]`` reads as "pull block
+# X, here are X's edits" -- see :meth:`Assembly.apply_edits`.
+type Edit = tuple[str, str, int] | Callable[[Assembly], None]
 
 # A symbol name appearing in an operand (a potential reference to another
 # block/pool). The lookbehind skips sublabel refs (``.foo``), mid-identifier
@@ -306,11 +312,26 @@ class Assembly:
     def _copy(self, lines: list[Line]) -> Assembly:
         return Assembly([copy.copy(line) for line in lines])
 
+    def _hash_label_index(self, name: str) -> int | None:
+        """Index of a scope-transparent ``#name`` label, or ``None``.
+
+        These share a neighbour's sublabel scope, so they are kept out of the
+        top-level index and found by scanning; :meth:`block` pulls them as
+        standalone blocks.
+        """
+        marker = "#" + name
+        return next(
+            (i for i, line in enumerate(self.lines) if line.label == marker),
+            None,
+        )
+
     def _block_span(self, label: str) -> tuple[int, int]:
-        if label not in self.labels:
+        start = self.labels.get(label)
+        if start is None:
+            start = self._hash_label_index(label)
+        if start is None:
             msg = f"no top-level label named {label!r}"
             raise KeyError(msg)
-        start = self.labels[label]
         return start, block_end(self.lines, start)
 
     def _block_lines(self, label: str, *, comments: bool) -> list[Line]:
@@ -320,14 +341,22 @@ class Assembly:
             return leading_comments(self.lines, start) + body
         return body
 
-    def function(self, name: str, *, comments: bool = False) -> Assembly:
+    def block(self, name: str, *, comments: bool = False) -> Assembly:
         """The top-level block ``name`` as a fresh :class:`Assembly`.
 
         Spans from the label to the next top-level label or pool; trailing
         blanks are trimmed. With ``comments`` the block's leading comment
-        comes along.
+        comes along. ``name`` may also be a scope-transparent ``#``-label
+        (e.g. ``Intro_SetStripesAndAdvance``); it is pulled as a standalone
+        block with a plain label.
         """
-        return self._copy(self._block_lines(name, comments=comments))
+        asm = self._copy(self._block_lines(name, comments=comments))
+        marker = "#" + name
+        for line in asm.lines:
+            if line.label == marker:
+                line.label = name  # standalone: drop the # scope-transparency
+                break
+        return asm
 
     def _pool_lines(self, name: str, *, comments: bool) -> list[Line]:
         if name not in self.pools:
@@ -611,6 +640,30 @@ class Assembly:
         for old, new, count in edits:
             self.replace(old, new, count)
 
+    def apply_edits(self, edits: Iterable[Edit]) -> None:
+        """Apply a block's edits in order (see :data:`Edit`).
+
+        Each edit is a ``(old, new, count)`` substring replace or a callable
+        handed this Assembly to edit freely (splice, annotate, duplicate rows).
+        Collecting a block's edits into one list keeps 'what is pulled' beside
+        'how it is changed'.
+        """
+        for edit in edits:
+            if callable(edit):
+                edit(self)
+            else:
+                self.replace(*edit)
+
+    def apply_edit_table(self, table: Mapping[str, Iterable[Edit]]) -> None:
+        """Apply a ``{block: edits}`` table -- each block's edits in turn.
+
+        For a blob pulled as one Assembly the keys document which routine each
+        group of edits targets; for individually pulled blocks, look each name
+        up and :meth:`apply_edits` it.
+        """
+        for edits in table.values():
+            self.apply_edits(edits)
+
     def annotate(self, needle: str, comment: str) -> None:
         """Append ``comment`` to the first line containing ``needle``."""
         line = self.lines[self.find(needle)]
@@ -704,13 +757,34 @@ class Assembly:
         self.lines.extend(_coerce(lines))
         self._mutated()
 
-    def delete(self, first: str, stop: str) -> None:
-        """Delete lines from ``first`` up to (excluding) ``stop``, by
-        substring."""
+    def splice(
+        self,
+        first: str,
+        lines: Iterable[Line | str],
+        *,
+        until: str | None = None,
+    ) -> None:
+        """Replace the line matching ``first`` (or the run ``[first, until)``)
+        with ``lines``.
+
+        A delete-then-insert at one site, in one call: it references the very
+        lines being removed, so no separate insertion anchor is needed. With
+        ``until`` omitted only the single ``first`` line is replaced. Matching
+        is by substring; ``lines`` may be empty (a pure delete).
+        """
         begin = self.find(first)
-        end = self.find(stop, begin)
-        del self.lines[begin:end]
+        end = self.find(until, begin) if until is not None else begin + 1
+        self.lines[begin:end] = _coerce(lines)
         self._mutated()
+
+    def delete(self, first: str, *, until: str | None = None) -> None:
+        """Delete the line matching ``first``, or the run ``[first, until)``.
+
+        With ``until`` omitted a single line is removed; otherwise every line
+        from ``first`` up to (excluding) the first ``until`` match. Matching is
+        by substring.
+        """
+        self.splice(first, [], until=until)
 
     def delete_block(self, label: str) -> None:
         """Delete the whole top-level block ``label`` begins."""

@@ -14,6 +14,7 @@ import importlib.metadata
 from .address import Address, Indicator
 from .assembly import (
     Assembly,
+    Edit,
     data,
     datas,
     dbr_trampolines,
@@ -50,6 +51,7 @@ __all__ = [
     "Block",
     "Caller",
     "ComputedSizer",
+    "Edit",
     "HybridSizer",
     "Indicator",
     "LandingPad",

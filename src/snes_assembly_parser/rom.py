@@ -254,9 +254,9 @@ class Rom:
     def _unit(self, name: str) -> Assembly:
         return self.units[self.unit_of(name)]
 
-    def function(self, name: str, *, comments: bool = False) -> Assembly:
-        """A fresh copy of function ``name`` (searched across all units)."""
-        return self._unit(name).function(name, comments=comments)
+    def block(self, name: str, *, comments: bool = False) -> Assembly:
+        """A fresh copy of block ``name`` (searched across all units)."""
+        return self._unit(name).block(name, comments=comments)
 
     def pool(self, name: str, *, comments: bool = False) -> Assembly:
         """A fresh copy of pool ``name`` (searched across all units)."""
