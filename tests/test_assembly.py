@@ -212,3 +212,61 @@ def test_apply_edit_table_applies_every_block() -> None:
     text = asm.render()
     assert "LDA.w #$FFFF" in text
     assert "LDA.w Other,Y" in text
+
+
+def test_subblock_pulls_sublabel_span_by_name() -> None:
+    asm = Assembly.from_content(
+        [
+            "Enclosing:",
+            ".not_mode7",
+            "#_008200: LDA.w $0128",
+            "#_008205: LDA.w TIMEUP",
+            "#_008208: STA.w VTIMEL",
+            "",
+            ".IRQ_inactive",
+            "#_00821B: LDA.b $13",
+        ]
+    )
+    frag = asm.subblock(".not_mode7")
+    text = frag.render()
+    assert text.splitlines()[0] == ".not_mode7"
+    assert "LDA.w TIMEUP" in text and "STA.w VTIMEL" in text
+    # stops at the next same-level sublabel; trailing blank trimmed
+    assert ".IRQ_inactive" not in text
+    assert "LDA.b $13" not in text
+    assert frag.lines[-1].opcode == "STA.w"
+
+
+def test_subblock_raises_when_missing() -> None:
+    asm = Assembly.from_content(["Foo:", "#_008000: RTS"])
+    with pytest.raises(KeyError, match="no sublabel"):
+        asm.subblock(".nope")
+
+
+def test_region_at_pulls_address_range_and_trims_trailing() -> None:
+    asm = Assembly.from_content(
+        [
+            "Enclosing:",
+            "#_008200: SEP #$20",
+            "#_008205: LDA.w TIMEUP",
+            "#_008208: STA.w VTIMEL",
+            "",
+            "; trailing comment of the next block",
+            ".next",
+            "#_00821B: LDA.b $13",
+        ]
+    )
+    frag = asm.region_at(0x008205, 0x00821B)
+    text = frag.render()
+    assert "LDA.w TIMEUP" in text and "STA.w VTIMEL" in text
+    assert "SEP #$20" not in text  # started at 0x008205
+    # trailing blank/comment/sublabel inside the span are dropped
+    assert ".next" not in text
+    assert "LDA.b $13" not in text  # stop is exclusive
+    assert frag.lines[-1].opcode == "STA.w"
+
+
+def test_region_at_raises_when_unanchored() -> None:
+    asm = Assembly.from_content(["Foo:", "#_008000: RTS"])
+    with pytest.raises(KeyError, match="anchored"):
+        asm.region_at(0x009999, 0x00999A)

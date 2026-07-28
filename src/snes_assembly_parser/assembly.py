@@ -377,6 +377,56 @@ class Assembly:
         _, end = self._block_span(last)
         return self._copy(trim_trailing(self.lines[start:end]))
 
+    def subblock(self, name: str, *, comments: bool = False) -> Assembly:
+        """A ``.sublabel`` span as a standalone block.
+
+        Spans from the sublabel to the next same-or-higher-level label (another
+        ``.sublabel`` or a top-level label), skipping the ``#_<hex>`` anchors
+        between -- pulling a scoped fragment *by name* rather than by raw
+        address. With ``comments`` its leading comment comes along.
+        """
+        start = next(
+            (i for i, line in enumerate(self.lines) if line.label == name),
+            None,
+        )
+        if start is None:
+            msg = f"no sublabel named {name!r}"
+            raise KeyError(msg)
+        end = len(self.lines)
+        for index in range(start + 1, len(self.lines)):
+            label = self.lines[index].label
+            if label is not None and not label.startswith("#"):
+                end = index
+                break
+        body = trim_trailing(self.lines[start:end])
+        if comments:
+            body = leading_comments(self.lines, start) + body
+        return self._copy(body)
+
+    def _index_at(self, address: int) -> int:
+        for index, line in enumerate(self.lines):
+            if line.address == address:
+                return index
+        msg = f"no line anchored at ${address:06X}"
+        raise KeyError(msg)
+
+    def region_at(self, start: int, stop: int) -> Assembly:
+        """The code in the address range ``[start, stop)`` as a standalone
+        block.
+
+        Pulls a fragment by its ``#_<hex>`` bounds -- the fallback when no
+        label marks it (prefer :meth:`block`/:meth:`subblock` when one does,
+        since addresses drift). Trailing non-code lines caught inside the span
+        (blanks, comments, a sublabel belonging to the next block) are dropped;
+        interior ones stay.
+        """
+        begin = self._index_at(start)
+        end = self._index_at(stop)
+        lines = self.lines[begin:end]
+        while lines and lines[-1].opcode is None:
+            lines.pop()
+        return self._copy(lines)
+
     def blocks_until(self, start: str) -> Assembly:
         """From ``start`` up to the first ``NULL_``/``UNREACHABLE_`` marker.
 

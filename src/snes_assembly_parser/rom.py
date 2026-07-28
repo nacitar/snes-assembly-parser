@@ -266,6 +266,12 @@ class Rom:
         """The run of blocks up to (excluding) ``name``, from its unit."""
         return self._unit(name).blocks_until(name)
 
+    def region_at(self, start: int, stop: int) -> Assembly:
+        """A fresh copy of the ``[start, stop)`` address range, from the unit
+        holding ``start`` -- the fallback for an unlabelled fragment (prefer
+        :meth:`block`/:meth:`subblock` when a label exists)."""
+        return self.units[self.unit_at(start)].region_at(start, stop)
+
     def extract(
         self,
         roots: str | Iterable[str],
