@@ -728,6 +728,31 @@ class Assembly:
         for edits in table.values():
             self.apply_edits(edits)
 
+    def dw_rows(self) -> list[list[str]]:
+        """Every ``dw`` line's arguments (a data table's rows), in order."""
+        return [line.arguments for line in self.lines if line.opcode == "dw"]
+
+    def overlay_dw(self, rows: Sequence[Sequence[str]]) -> None:
+        """Overwrite the leading ``dw`` lines' arguments with ``rows``, in
+        order -- a same-shape, byte-neutral data-table swap.
+
+        Only the first ``len(rows)`` ``dw`` lines are touched; any ``dw`` lines
+        past them stay as they were (e.g. non-glyph data below a glyph table).
+        Raises if there are fewer ``dw`` lines than rows.
+        """
+        rows = list(rows)
+        written = 0
+        for line in self.lines:
+            if written == len(rows):
+                break
+            if line.opcode == "dw":
+                line.arguments = list(rows[written])
+                written += 1
+        if written != len(rows):
+            msg = f"overlay_dw: {written} dw lines for {len(rows)} rows"
+            raise ValueError(msg)
+        self._mutated()
+
     def annotate(self, needle: str, comment: str) -> None:
         """Append ``comment`` to the first line containing ``needle``."""
         line = self.lines[self.find(needle)]

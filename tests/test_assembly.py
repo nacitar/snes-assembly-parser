@@ -281,3 +281,26 @@ def test_address_of_returns_first_anchor(asm: Assembly) -> None:
 def test_address_of_raises_for_unknown_label(asm: Assembly) -> None:
     with pytest.raises(KeyError):
         asm.address_of("Nope")
+
+
+def test_dw_rows_and_overlay_dw() -> None:
+    asm = Assembly.from_content(
+        [
+            "Table:",
+            "#_008000: dw $1111",
+            "#_008002: dw $2222",
+            "#_008004: dw $3333 ; kept below the swap",
+        ]
+    )
+    assert asm.dw_rows() == [["$1111"], ["$2222"], ["$3333"]]
+    # overlay only the leading rows; the third dw is left as-is
+    asm.overlay_dw([["$AAAA"], ["$BBBB"]])
+    text = asm.render()
+    assert "dw $AAAA" in text and "dw $BBBB" in text
+    assert "dw $3333 ; kept below the swap" in text
+
+
+def test_overlay_dw_raises_when_too_few_dw() -> None:
+    asm = Assembly.from_content(["Table:", "#_008000: dw $1111"])
+    with pytest.raises(ValueError, match="overlay_dw"):
+        asm.overlay_dw([["$AAAA"], ["$BBBB"]])
