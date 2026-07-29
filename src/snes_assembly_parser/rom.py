@@ -266,6 +266,10 @@ class Rom:
         """The run of blocks up to (excluding) ``name``, from its unit."""
         return self._unit(name).blocks_until(name)
 
+    def address_of(self, name: str) -> int:
+        """The ROM address of block ``name`` (searched across all units)."""
+        return self._unit(name).address_of(name)
+
     def region_at(self, start: int, stop: int) -> Assembly:
         """A fresh copy of the ``[start, stop)`` address range, from the unit
         holding ``start`` -- the fallback for an unlabelled fragment (prefer

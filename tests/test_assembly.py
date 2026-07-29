@@ -270,3 +270,14 @@ def test_region_at_raises_when_unanchored() -> None:
     asm = Assembly.from_content(["Foo:", "#_008000: RTS"])
     with pytest.raises(KeyError, match="anchored"):
         asm.region_at(0x009999, 0x00999A)
+
+
+def test_address_of_returns_first_anchor(asm: Assembly) -> None:
+    # label on its own line; the address is the code it names (next anchor)
+    assert asm.address_of("Foo") == 0x008000
+    assert asm.address_of("Bar") == 0x008007
+
+
+def test_address_of_raises_for_unknown_label(asm: Assembly) -> None:
+    with pytest.raises(KeyError):
+        asm.address_of("Nope")

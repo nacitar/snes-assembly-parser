@@ -224,6 +224,20 @@ class Assembly:
         """Every top-level label name, in source order."""
         return sorted(self.labels, key=lambda name: self.labels[name])
 
+    def address_of(self, name: str) -> int:
+        """The ROM address of block ``name`` -- its first live ``#_<hex>``
+        anchor (the code the label names). The inverse of :meth:`line_at`.
+
+        Also accepts a scope-transparent ``#name`` label. Raises if the block
+        or its address is missing, so a stale reference fails loud.
+        """
+        start = self._block_span(name)[0]
+        for line in self.lines[start:]:
+            if line.address is not None:
+                return line.address
+        msg = f"no address for label {name!r}"
+        raise KeyError(msg)
+
     def _boundaries(self) -> list[int]:
         return sorted(
             {*self.labels.values(), *(s for s, _ in self.pools.values())}
